@@ -1,4 +1,4 @@
-name = "qats-dashboard-api"
+name = 'dashboard-quant'
 main = "src/index.ts"
 compatibility_date = "2026-07-04"
 
@@ -12,3 +12,18 @@ bucket_name = "qats-dashboard-data"
 #   ACCESS_AUD               the Access application's AUD tag
 #   ACCESS_ALLOWED_EMAIL     the single operator email allowed through
 #   ACCESS_JWKS_TTL_SECONDS  optional, JWKS cache TTL in seconds (default 3600)
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
