@@ -7,6 +7,7 @@ venv/
 dist/
 build/
 out/
+.wrangler/
 
 # Environment
 .env
