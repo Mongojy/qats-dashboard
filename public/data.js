@@ -50,13 +50,17 @@ export function tradeEventsToday(stream) {
   return positions.filter((pos) => pos.days_held === 0).map((pos) => `${pos.base_asset} open`);
 }
 
-// Net PnL % per day, same BASELINE_EQUITY used by equityPct — for the
-// stream-view chart (chart.js::netPnlChartSvg).
+// Net PnL % per day for the stream-view chart (chart.js::netPnlChartSvg).
+// Baseline is equity_series[0] (anchor-day equity), NOT the nominal
+// BASELINE_EQUITY used by equityPct — that's what net_pnl_pct itself is
+// computed against (see forwardPnlPct above), so the last point of this
+// series lines up with the "Net PnL" figure shown next to the chart.
 export function netPnlPctSeries(stream) {
   const points = Array.isArray(stream?.equity_series) ? stream.equity_series : [];
-  return points
-    .filter((p) => typeof p?.equity === "number" && typeof p?.date === "string")
-    .map((p) => ({ date: p.date, pct: ((p.equity - BASELINE_EQUITY) / BASELINE_EQUITY) * 100 }));
+  const valid = points.filter((p) => typeof p?.equity === "number" && typeof p?.date === "string");
+  const baseline = valid[0]?.equity;
+  if (typeof baseline !== "number" || baseline === 0) return [];
+  return valid.map((p) => ({ date: p.date, pct: ((p.equity - baseline) / baseline) * 100 }));
 }
 
 export function activeFlags(stream) {
