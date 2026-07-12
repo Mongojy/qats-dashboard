@@ -23,22 +23,19 @@ body {
 }
 
 .sidebar {
-  width: 200px;
+  width: max-content;
+  max-width: 320px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   padding: 16px 0 0;
-  overflow: hidden;
   transition: width 0.2s ease;
 }
 
 .sidebar.is-collapsed {
   width: 52px;
-}
-
-.sidebar__scroll {
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .sidebar__asof {
@@ -53,7 +50,6 @@ body {
   padding: 0 16px 16px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
-  white-space: nowrap;
 }
 
 .sidebar__heading {
