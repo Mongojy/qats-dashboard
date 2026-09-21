@@ -49,6 +49,23 @@ export async function serveSummary(bucket: R2Bucket): Promise<Response> {
   return new Response(text, { status: 200, headers });
 }
 
+const VERDICTS_KEY = "verdict_cones.json";
+
+export async function serveVerdicts(bucket: R2Bucket): Promise<Response> {
+  let object: R2ObjectBody | null;
+  try {
+    object = await bucket.get(VERDICTS_KEY);
+  } catch {
+    return jsonError(502, "r2_read_failed");
+  }
+  if (!object) return jsonError(503, "verdicts_not_available");
+
+  return new Response(object.body, {
+    status: 200,
+    headers: { "content-type": "application/json", "cache-control": "private, max-age=30" },
+  });
+}
+
 async function serveSignalsLatest(bucket: R2Bucket): Promise<Response> {
   const manifestKey = "signals_manifest.json";
   const manifestObject = await bucket.get(manifestKey);
@@ -95,7 +112,7 @@ export default {
       case "/api/signals/latest":
         return serveSignalsLatest(env.DATA_BUCKET);
       case "/api/verdicts":
-        return serveR2Json(env.DATA_BUCKET, "gate_verdicts.json");
+        return serveVerdicts(env.DATA_BUCKET);
       case "/api/summary":
         return serveSummary(env.DATA_BUCKET);
       default:
