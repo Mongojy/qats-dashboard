@@ -1,7 +1,7 @@
 import { getStreams, getAsOfDate, tradeEventsToday } from "./data.js";
 import { escapeHtml } from "./format.js";
 import { renderDashboard } from "./views/dashboard.js";
-import { renderStream } from "./views/stream.js";
+import { renderStream, mountConeSection } from "./views/stream.js";
 
 const sidebarEl = document.getElementById("sidebar");
 const viewEl = document.getElementById("view");
@@ -146,7 +146,13 @@ function renderView() {
   const hash = window.location.hash.replace(/^#/, "") || "/";
   const streamMatch = hash.match(/^\/stream\/(.+)$/);
 
-  viewEl.innerHTML = streamMatch ? renderStream(summary, decodeURIComponent(streamMatch[1])) : renderDashboard(summary);
+  if (streamMatch) {
+    const streamId = decodeURIComponent(streamMatch[1]);
+    viewEl.innerHTML = renderStream(summary, streamId);
+    mountConeSection(summary, streamId);
+  } else {
+    viewEl.innerHTML = renderDashboard(summary);
+  }
 }
 
 function renderError(message) {

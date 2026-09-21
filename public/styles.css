@@ -320,6 +320,106 @@ body {
   margin: 0 0 16px;
 }
 
+.cone-chart {
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  aspect-ratio: 560 / 200;
+  color: currentColor;
+  margin-bottom: 16px;
+}
+
+.cone-chart__axis {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.cone-chart__zero-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.cone-chart__tick {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.cone-chart__tick-label {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.cone-chart__bar {
+  stroke: var(--muted);
+  stroke-width: 6;
+}
+
+.cone-chart__whisker {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.cone-chart__median {
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.cone-chart__realized--pos {
+  stroke: var(--positive);
+  fill: var(--positive);
+}
+
+.cone-chart__realized--neg {
+  stroke: var(--negative);
+  fill: var(--negative);
+}
+
+.cone-chart__realized {
+  stroke-width: 2;
+}
+
+.cone-chart__marker {
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.cone-chart__marker-label {
+  fill: currentColor;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.cone-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.cone-read {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.cone-caption {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.cone-caption--warning {
+  color: #c0392b;
+}
+
+.cone-section__generated-at {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+
 .empty-state,
 .error-state {
   color: var(--muted);
