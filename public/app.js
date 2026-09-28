@@ -1,184 +1,263 @@
-import { getStreams, getAsOfDate, tradeEventsToday } from "./data.js";
+// Entry point: fetches /api/summary and /api/verdicts in parallel, owns the
+// UI state and the hash router, and wires DOM events. Everything payload-
+// shaped goes through data.js / cones.js; markup comes from views/*.
+
+import { getAsOfDate, findStream, openPositions, bookStats, briefing, matchesFilter, sortByLivePnl } from "./data.js";
+import { loadCones, coneFor, readsWrittenCount } from "./cones.js";
+import { buildRows } from "./rows.js";
 import { escapeHtml } from "./format.js";
-import { renderDashboard } from "./views/dashboard.js";
-import { renderStream, mountConeSection } from "./views/stream.js";
+import { renderHeader } from "./views/header.js";
+import { renderList } from "./views/list.js";
+import { renderDetail, renderUnknownStream } from "./views/detail.js";
+import { renderPositions } from "./views/positions.js";
+import { renderGlossary } from "./views/glossary.js";
 
-const sidebarEl = document.getElementById("sidebar");
-const viewEl = document.getElementById("view");
+const headerEl = document.getElementById("masthead");
+const panesEl = document.getElementById("panes");
+const listEl = document.getElementById("list");
+const detailEl = document.getElementById("detail");
+const glossaryEl = document.getElementById("glossary");
 
-const SIDEBAR_COLLAPSED_KEY = "qats_sidebar_collapsed";
-const BITCOIN_STREAM_ID = "btc_hold_baseline";
-const BITCOIN_GLYPH = "₿";
+// Narrow screens get a narrower cone viewBox so its in-SVG labels stay
+// legible; re-rendered only when this breakpoint flips.
+const narrowQuery = window.matchMedia("(max-width: 639px)");
+const splitQuery = window.matchMedia("(min-width: 1024px)");
 
-const MONITOR_ICON = `
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="2" y="3" width="20" height="14" rx="2" />
-    <line x1="8" y1="21" x2="16" y2="21" />
-    <line x1="12" y1="17" x2="12" y2="21" />
-  </svg>
-`;
+const state = {
+  summary: null,
+  conesPayload: null,
+  conesState: "loading", // "loading" | "ready" | "failed"
+  filter: "all",
+  positionsMode: "ranked",
+  animateList: true,
+  listScrollY: 0,
+};
 
-const PANEL_ICON = `
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" />
-    <line x1="9" y1="3" x2="9" y2="21" />
-  </svg>
-`;
+// ---------------------------------------------------------------------------
+// Derived rows
+// ---------------------------------------------------------------------------
 
-let summary = null;
-
-// Sequential #N badges for every stream except the bitcoin one, ordered by
-// anchor_date ascending (tie-break strategy_id) and computed fresh from the
-// streams list each render — no hardcoded id map.
-function streamBadgeNumbers(streams) {
-  const numbered = streams
-    .filter((s) => s.strategy_id !== BITCOIN_STREAM_ID)
-    .slice()
-    .sort((a, b) => {
-      const ad = a.anchor_date ?? "";
-      const bd = b.anchor_date ?? "";
-      if (ad !== bd) return ad < bd ? -1 : 1;
-      return a.strategy_id < b.strategy_id ? -1 : a.strategy_id > b.strategy_id ? 1 : 0;
-    });
-  const badges = new Map();
-  numbered.forEach((s, i) => badges.set(s.strategy_id, `#${i + 1}`));
-  return badges;
+// undefined while cones are not loaded; null = no cone (reference stream).
+function coneHandle(id) {
+  return state.conesState === "ready" ? coneFor(state.conesPayload, id) : undefined;
 }
 
-function renderTodayBlock(streams) {
-  const rows = streams
-    .map((s) => ({ id: s.strategy_id, events: tradeEventsToday(s) }))
-    .filter((row) => row.events.length > 0);
-
-  const body = rows.length
-    ? `<ul class="today-list">
-        ${rows
-          .map(
-            (row) => `
-          <li>
-            <span class="today-list__stream">${escapeHtml(row.id)}</span>
-            <span class="today-list__events">${escapeHtml(row.events.join(", "))}</span>
-          </li>
-        `,
-          )
-          .join("")}
-      </ul>`
-    : `<p class="empty-state">No opens today.</p>`;
-
-  return `
-    <div class="sidebar__today">
-      <h4 class="sidebar__heading">Today's opens</h4>
-      ${body}
-    </div>
-  `;
+function allRows() {
+  return buildRows(state.summary, state.conesState, state.conesPayload);
 }
 
-function navLink(href, label, badgeHtml) {
-  return `
-    <li>
-      <a href="${href}" class="nav-link" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
-        <span class="nav-link__badge">${badgeHtml}</span>
-        <span class="nav-link__label">${escapeHtml(label)}</span>
-      </a>
-    </li>
-  `;
-}
+// ---------------------------------------------------------------------------
+// Routing: #/ -> first card of the current filter; #/stream/{id} -> that one.
+// The route also decides list vs detail on narrow screens.
+// ---------------------------------------------------------------------------
 
-function collapseToggleLabel(collapsed) {
-  return collapsed ? "Expand sidebar" : "Collapse sidebar";
-}
-
-function renderSidebar() {
-  const streams = summary ? getStreams(summary) : [];
-  const asOfDate = summary ? getAsOfDate(summary) : null;
-
-  const badges = streamBadgeNumbers(streams);
-  const links = streams
-    .map((s) => {
-      const badge = s.strategy_id === BITCOIN_STREAM_ID ? BITCOIN_GLYPH : (badges.get(s.strategy_id) ?? "—");
-      return navLink(`#/stream/${encodeURIComponent(s.strategy_id)}`, s.strategy_id, escapeHtml(badge));
-    })
-    .join("");
-
-  const collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
-  sidebarEl.classList.toggle("is-collapsed", collapsed);
-
-  sidebarEl.innerHTML = `
-    <div class="sidebar__scroll">
-      ${asOfDate ? `<div class="sidebar__asof">${escapeHtml(asOfDate)}</div>` : ""}
-      ${renderTodayBlock(streams)}
-      <nav>
-        <ul class="nav-list">
-          ${navLink("#/", "Dashboard", MONITOR_ICON)}
-          ${links}
-        </ul>
-      </nav>
-    </div>
-    <button type="button" class="sidebar__collapse-toggle" aria-expanded="${!collapsed}" aria-controls="sidebar" aria-label="${collapseToggleLabel(collapsed)}" title="${collapseToggleLabel(collapsed)}">
-      ${PANEL_ICON}
-    </button>
-  `;
-
-  const toggle = sidebarEl.querySelector(".sidebar__collapse-toggle");
-  toggle.addEventListener("click", () => {
-    const next = !sidebarEl.classList.contains("is-collapsed");
-    sidebarEl.classList.toggle("is-collapsed", next);
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-    toggle.setAttribute("aria-expanded", String(!next));
-    toggle.setAttribute("aria-label", collapseToggleLabel(next));
-    toggle.title = collapseToggleLabel(next);
-  });
-
-  updateActiveNav();
-}
-
-function updateActiveNav() {
+function currentRoute() {
   const hash = window.location.hash.replace(/^#/, "") || "/";
-  sidebarEl.querySelectorAll(".nav-link").forEach((el) => {
-    const href = el.getAttribute("href").replace(/^#/, "");
-    el.classList.toggle("is-active", href === hash);
-  });
-}
-
-function renderView() {
-  if (!summary) return;
-
-  const hash = window.location.hash.replace(/^#/, "") || "/";
-  const streamMatch = hash.match(/^\/stream\/(.+)$/);
-
-  if (streamMatch) {
-    const streamId = decodeURIComponent(streamMatch[1]);
-    viewEl.innerHTML = renderStream(summary, streamId);
-    mountConeSection(summary, streamId);
-  } else {
-    viewEl.innerHTML = renderDashboard(summary);
+  const match = hash.match(/^\/stream\/(.+)$/);
+  if (!match) return { id: null };
+  try {
+    return { id: decodeURIComponent(match[1]) };
+  } catch {
+    return { id: match[1] };
   }
 }
 
-function renderError(message) {
-  viewEl.innerHTML = `<p class="error-state">Failed to load summary: ${escapeHtml(message)}</p>`;
+function visibleRows(rows) {
+  return sortByLivePnl(rows.filter((r) => matchesFilter(r, state.filter)));
 }
 
+function selectedId(rows) {
+  const route = currentRoute();
+  if (route.id !== null) return route.id;
+  return visibleRows(rows)[0]?.id ?? sortByLivePnl(rows)[0]?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+function renderMasthead(rows) {
+  const known = state.conesState === "ready";
+  headerEl.innerHTML = renderHeader({
+    asOfDate: getAsOfDate(state.summary),
+    stats: bookStats(rows, known),
+    briefing: briefing(rows, known, known ? readsWrittenCount(state.conesPayload) : 0),
+    conesState: state.conesState,
+  });
+}
+
+function renderListPane(rows) {
+  listEl.innerHTML = renderList({
+    rows: visibleRows(rows),
+    filter: state.filter,
+    selectedId: selectedId(rows),
+    animate: state.animateList,
+  });
+  state.animateList = false;
+}
+
+function renderDetailPane(rows) {
+  const id = selectedId(rows);
+  const stream = id === null ? null : findStream(state.summary, id);
+  if (!stream) {
+    detailEl.innerHTML = id === null ? `<p class="empty-state">No streams in summary.</p>` : renderUnknownStream(id);
+    return;
+  }
+  const row = rows.find((r) => r.id === id);
+  detailEl.innerHTML = renderDetail({
+    stream,
+    status: row.status,
+    flags: row.flags,
+    next: row.next,
+    cone: coneHandle(id),
+    conesPayload: state.conesPayload,
+    coneWidth: narrowQuery.matches ? 360 : 640,
+    positionsMode: state.positionsMode,
+  });
+}
+
+function renderAll() {
+  if (!state.summary) return;
+  const rows = allRows();
+  panesEl.dataset.route = currentRoute().id === null ? "list" : "detail";
+  renderMasthead(rows);
+  renderListPane(rows);
+  renderDetailPane(rows);
+}
+
+function renderError(message) {
+  panesEl.dataset.route = "list";
+  listEl.innerHTML = `<p class="error-state">Failed to load summary: ${escapeHtml(message)}</p>`;
+  detailEl.innerHTML = "";
+}
+
+// ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+function startCones() {
+  state.conesState = "loading";
+  loadCones()
+    .then((payload) => {
+      state.conesPayload = payload;
+      state.conesState = "ready";
+    })
+    .catch(() => {
+      state.conesPayload = null;
+      state.conesState = "failed";
+    })
+    .finally(renderAll);
+}
+
+async function loadSummary() {
+  const res = await fetch("/api/summary");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const summary = await res.json();
+  if (summary.schema_version !== 2) {
+    console.warn(`Unexpected schema_version: ${summary.schema_version}`);
+  }
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+function onRouteChange(prevRouteWasList) {
+  if (state.conesState === "failed") startCones();
+  const route = currentRoute();
+  renderAll();
+
+  if (splitQuery.matches) {
+    detailEl.scrollTop = 0;
+  } else if (route.id !== null) {
+    if (prevRouteWasList) state.listScrollY = window.scrollY;
+    window.scrollTo(0, panesEl.offsetTop);
+  } else {
+    window.scrollTo(0, state.listScrollY);
+  }
+}
+
+let lastRouteWasList = currentRoute().id === null;
+window.addEventListener("hashchange", () => {
+  const prev = lastRouteWasList;
+  lastRouteWasList = currentRoute().id === null;
+  onRouteChange(prev);
+});
+
+document.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  const filterBtn = target.closest("[data-filter]");
+  if (filterBtn) {
+    state.filter = filterBtn.dataset.filter;
+    const rows = allRows();
+    renderListPane(rows);
+    if (currentRoute().id === null) {
+      renderDetailPane(rows);
+      detailEl.scrollTop = 0;
+    }
+    return;
+  }
+
+  const modeBtn = target.closest("[data-positions-mode]");
+  if (modeBtn) {
+    state.positionsMode = modeBtn.dataset.positionsMode;
+    const stream = findStream(state.summary, selectedId(allRows()));
+    const section = document.getElementById("positions-section");
+    if (stream && section) {
+      section.outerHTML = renderPositions(openPositions(stream), state.positionsMode);
+      document.querySelector(`[data-positions-mode="${state.positionsMode}"]`)?.focus();
+    }
+    return;
+  }
+
+  const posToggle = target.closest("[data-position-toggle]");
+  if (posToggle) {
+    const open = posToggle.getAttribute("aria-expanded") !== "true";
+    posToggle.setAttribute("aria-expanded", String(open));
+    const panel = document.getElementById(posToggle.getAttribute("aria-controls"));
+    if (panel) panel.hidden = !open;
+    return;
+  }
+
+  if (target.closest("[data-glossary-open]")) {
+    glossaryEl.showModal();
+    return;
+  }
+  if (target.closest("[data-glossary-close]")) {
+    glossaryEl.close();
+    return;
+  }
+  // Backdrop click: the dialog element itself is the only target outside
+  // its panel.
+  if (target === glossaryEl) glossaryEl.close();
+});
+
+// Esc closes <dialog> natively; either way focus goes back to the trigger.
+glossaryEl.addEventListener("close", () => {
+  headerEl.querySelector("[data-glossary-open]")?.focus();
+});
+
+narrowQuery.addEventListener("change", () => {
+  if (state.summary) renderDetailPane(allRows());
+});
+
+// ---------------------------------------------------------------------------
+// Boot: both fetches start together; list + KPIs render from the summary
+// without waiting for verdicts.
+// ---------------------------------------------------------------------------
+
 async function init() {
+  glossaryEl.innerHTML = renderGlossary();
+  startCones();
   try {
-    const res = await fetch("/api/summary");
-    if (!res.ok) {
-      renderError(`HTTP ${res.status}`);
-      return;
-    }
-    summary = await res.json();
-    if (summary.schema_version !== 2) {
-      console.warn(`Unexpected schema_version: ${summary.schema_version}`);
-    }
-    renderSidebar();
-    renderView();
+    state.summary = await loadSummary();
+    renderAll();
   } catch (err) {
     renderError(err.message);
   }
 }
 
-window.addEventListener("hashchange", () => {
-  renderView();
-  updateActiveNav();
-});
 init();
