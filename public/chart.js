@@ -1,250 +1,280 @@
-// Tiny inline-SVG line chart. No canvas — just <line>/<circle> elements
-// scaled to fit a viewBox, with x/y axes and sign-colored segments.
+// Inline-SVG charts. No canvas, no library. Pure string builders — no DOM —
+// so they can be unit-tested and rendered through innerHTML. Every label is
+// either a number formatted here or a string passed through escapeHtml.
 
-import { escapeHtml } from "./format.js";
-
-const PAD = { top: 10, right: 12, bottom: 22, left: 40 };
-const MAX_X_TICKS = 5;
+import { escapeHtml, fmtDay } from "./format.js";
 
 function bucket(value) {
   return value >= 0 ? "pos" : "neg";
 }
 
-// Evenly-spaced indices into [0, n), always including 0 and n-1.
-function pickTickIndices(n, maxTicks) {
-  if (n <= 1) return [0];
-  if (n <= maxTicks) return Array.from({ length: n }, (_, i) => i);
-  const step = (n - 1) / (maxTicks - 1);
-  const indices = new Set();
-  for (let i = 0; i < maxTicks; i++) indices.add(Math.round(i * step));
-  return [...indices].sort((a, b) => a - b);
-}
-
-function xTickLabel(date) {
-  return typeof date === "string" ? date.slice(5) : String(date);
-}
-
-export function netPnlChartSvg(points, { width = 560, height = 160 } = {}) {
-  const series = Array.isArray(points) ? points : [];
-  if (series.length === 0) {
-    return `<svg viewBox="0 0 ${width} ${height}" class="pnl-chart pnl-chart--empty"></svg>`;
-  }
-
-  const values = series.map((p) => p.pct);
-  const min = Math.min(0, ...values);
-  const max = Math.max(0, ...values);
-  const span = max - min || 1;
-
-  const innerW = width - PAD.left - PAD.right;
-  const innerH = height - PAD.top - PAD.bottom;
-  const step = series.length > 1 ? innerW / (series.length - 1) : 0;
-
-  const xAt = (i) => PAD.left + i * step;
-  const yAt = (v) => PAD.top + innerH - ((v - min) / span) * innerH;
-  const yZero = yAt(0);
-
-  const coords = series.map((p, i) => ({ x: xAt(i), y: yAt(p.pct), v: p.pct }));
-
-  // y-axis ticks: min/0/max, deduped, and dropped if within ~5% of the
-  // 0-gridline in pixel space (avoids label collision with "0%").
-  const collisionPx = innerH * 0.05;
-  const yTickValues = [...new Set([min, 0, max])].filter(
-    (v) => v === 0 || Math.abs(yAt(v) - yZero) >= collisionPx,
-  );
-  const yTicks = yTickValues
-    .map(
-      (v) => `
-      <line x1="${PAD.left - 4}" y1="${yAt(v).toFixed(2)}" x2="${PAD.left}" y2="${yAt(v).toFixed(2)}" class="pnl-chart__tick" />
-      <text x="${(PAD.left - 8).toFixed(2)}" y="${yAt(v).toFixed(2)}" class="pnl-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtPctLabel(v)}</text>
-    `,
-    )
-    .join("");
-
-  const xTickIndices = pickTickIndices(series.length, MAX_X_TICKS);
-  const xTicks = xTickIndices
-    .map((i) => {
-      const x = xAt(i).toFixed(2);
-      const y = (PAD.top + innerH).toFixed(2);
-      return `
-      <line x1="${x}" y1="${y}" x2="${x}" y2="${(PAD.top + innerH + 4).toFixed(2)}" class="pnl-chart__tick" />
-      <text x="${x}" y="${(PAD.top + innerH + 15).toFixed(2)}" class="pnl-chart__tick-label" text-anchor="middle">${xTickLabel(series[i].date)}</text>
-    `;
-    })
-    .join("");
-
-  const axes = `
-    <line x1="${PAD.left}" y1="${PAD.top}" x2="${PAD.left}" y2="${(PAD.top + innerH).toFixed(2)}" class="pnl-chart__axis" />
-    <line x1="${PAD.left}" y1="${(PAD.top + innerH).toFixed(2)}" x2="${(PAD.left + innerW).toFixed(2)}" y2="${(PAD.top + innerH).toFixed(2)}" class="pnl-chart__axis" />
-    <line x1="${PAD.left}" y1="${yZero.toFixed(2)}" x2="${(PAD.left + innerW).toFixed(2)}" y2="${yZero.toFixed(2)}" class="pnl-chart__zero-line" />
-  `;
-
-  let plot;
-  if (coords.length === 1) {
-    const p = coords[0];
-    plot = `<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="3" class="pnl-chart__point pnl-chart__point--${bucket(p.v)}" />`;
-  } else {
-    const segments = [];
-    for (let i = 0; i < coords.length - 1; i++) {
-      const a = coords[i];
-      const b = coords[i + 1];
-      const bucketA = bucket(a.v);
-      const bucketB = bucket(b.v);
-      if (bucketA === bucketB) {
-        segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, color: bucketA });
-      } else {
-        const t = a.v / (a.v - b.v);
-        const crossX = a.x + (b.x - a.x) * t;
-        segments.push({ x1: a.x, y1: a.y, x2: crossX, y2: yZero, color: bucketA });
-        segments.push({ x1: crossX, y1: yZero, x2: b.x, y2: b.y, color: bucketB });
-      }
-    }
-    plot = segments
-      .map(
-        (s) =>
-          `<line x1="${s.x1.toFixed(2)}" y1="${s.y1.toFixed(2)}" x2="${s.x2.toFixed(2)}" y2="${s.y2.toFixed(2)}" class="pnl-chart__segment pnl-chart__segment--${s.color}" />`,
-      )
-      .join("");
-  }
-
-  return `
-    <svg viewBox="0 0 ${width} ${height}" class="pnl-chart">
-      ${axes}
-      ${yTicks}
-      ${xTicks}
-      ${plot}
-    </svg>
-  `;
-}
-
-function fmtPctLabel(value) {
+function fmtPctLabel(value, decimals = 1) {
   const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}%`;
+  return `${sign}${value.toFixed(decimals)}%`;
 }
 
 // fraction -> "+12.3%"-style label, for cone-chart values (percentiles,
 // realized returns) which are stored as fractions, not already-scaled
-// percentages like netPnlChartSvg's input.
+// percentages like the live-path input.
 function fmtFracPctLabel(value) {
   return fmtPctLabel(value * 100);
 }
 
-const CONE_PAD = { top: 10, right: 12, bottom: 22, left: 44 };
+function fixed(n) {
+  return n.toFixed(2);
+}
 
+// ---------------------------------------------------------------------------
+// Sparkline (strategy card). Input: liveSeries(stream) -> [{ date, pct }].
+// Zero baseline + one path coloured by the sign of the last point.
+// ---------------------------------------------------------------------------
+
+export function sparklineSvg(points) {
+  const w = 160;
+  const h = 42;
+  const pad = 1;
+  const values = (Array.isArray(points) ? points : []).map((p) => p.pct);
+  if (values.length === 0) return `<svg viewBox="0 0 ${w} ${h}" class="spark" aria-hidden="true"></svg>`;
+
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const span = max - min || 1;
+  const xAt = (i) => pad + (i / Math.max(values.length - 1, 1)) * (w - pad * 2);
+  const yAt = (v) => pad + (1 - (v - min) / span) * (h - pad * 2);
+  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${fixed(xAt(i))} ${fixed(yAt(v))}`).join(" ");
+  const tone = bucket(values[values.length - 1]);
+
+  return `
+    <svg viewBox="0 0 ${w} ${h}" class="spark" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" x2="${w}" y1="${fixed(yAt(0))}" y2="${fixed(yAt(0))}" class="spark__zero" />
+      <path d="${d}" class="spark__line spark__line--${tone}" vector-effect="non-scaling-stroke" />
+    </svg>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Live path (detail view). Input: liveSeries(stream) -> [{ date, pct }],
+// rebased to 0 at the anchor row. Area + line split at the zero crossing,
+// coloured by sign. Labels (max, last, min, first/last date) are HTML
+// overlays so they stay crisp while the SVG stretches to the container.
+// ---------------------------------------------------------------------------
+
+// Vertical inset (viewBox units) reserved for the max/last and min overlay
+// labels, so the line never runs underneath them.
+const LIVE_PAD_Y = 22;
+
+function livePathY(min, max, h) {
+  const span = max - min || 1;
+  return (v) => LIVE_PAD_Y + (1 - (v - min) / span) * (h - LIVE_PAD_Y * 2);
+}
+
+function splitBySign(values, w, h) {
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const yAt = livePathY(min, max, h);
+  const xy = values.map((v, i) => ({ x: (i / Math.max(values.length - 1, 1)) * w, y: yAt(v), v }));
+  const z = yAt(0);
+  const line = { pos: [], neg: [] };
+  const area = { pos: [], neg: [] };
+
+  const push = (a, b, tone) => {
+    const seg = `M${fixed(a.x)} ${fixed(a.y)} L${fixed(b.x)} ${fixed(b.y)}`;
+    line[tone].push(seg);
+    area[tone].push(`${seg} L${fixed(b.x)} ${fixed(z)} L${fixed(a.x)} ${fixed(z)} Z`);
+  };
+
+  for (let i = 0; i < xy.length - 1; i++) {
+    const a = xy[i];
+    const b = xy[i + 1];
+    if (bucket(a.v) === bucket(b.v)) {
+      push(a, b, bucket(a.v));
+    } else {
+      const t = a.v / (a.v - b.v);
+      const cross = { x: a.x + (b.x - a.x) * t, y: z, v: 0 };
+      push(a, cross, bucket(a.v));
+      push(cross, b, bucket(b.v));
+    }
+  }
+  return { z, line, area };
+}
+
+export function livePathSvg(points) {
+  const series = Array.isArray(points) ? points : [];
+  if (series.length === 0) return `<p class="empty-state">No equity rows yet.</p>`;
+
+  const w = 640;
+  const h = 220;
+  const values = series.map((p) => p.pct);
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const last = values[values.length - 1];
+
+  const yAt = livePathY(min, max, h);
+  let plot;
+  if (values.length === 1) {
+    const y = yAt(last);
+    plot = `<circle cx="${w / 2}" cy="${fixed(y)}" r="3" class="live-path__point live-path__point--${bucket(last)}" />`;
+  } else {
+    const { line, area } = splitBySign(values, w, h);
+    plot = `
+      <path d="${area.pos.join(" ")}" class="live-path__area live-path__area--pos" />
+      <path d="${area.neg.join(" ")}" class="live-path__area live-path__area--neg" />
+      <path d="${line.pos.join(" ")}" class="live-path__line live-path__line--pos" vector-effect="non-scaling-stroke" />
+      <path d="${line.neg.join(" ")}" class="live-path__line live-path__line--neg" vector-effect="non-scaling-stroke" />
+    `;
+  }
+  const z = yAt(0);
+
+  return `
+    <div class="live-path">
+      <svg viewBox="0 0 ${w} ${h}" class="live-path__svg" preserveAspectRatio="none" role="img" aria-label="Live P&amp;L path from the anchor close">
+        <line x1="0" x2="${w}" y1="${fixed(z)}" y2="${fixed(z)}" class="live-path__zero" vector-effect="non-scaling-stroke" />
+        ${plot}
+      </svg>
+      <div class="live-path__top">
+        <span class="tabular">${fmtPctLabel(max)}</span>
+        <span class="tabular live-path__last live-path__last--${bucket(last)}">${fmtPctLabel(last, 2)}</span>
+      </div>
+      <div class="live-path__bottom"><span class="tabular">${fmtPctLabel(min)}</span></div>
+    </div>
+    <div class="live-path__dates">
+      <span>${escapeHtml(fmtDay(series[0].date))}</span>
+      <span>${escapeHtml(fmtDay(series[series.length - 1].date))}</span>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
 // Percentile-cone chart: a p5-p95 bar + p1 whisker + p50 tick at each grid
-// horizon in view, with the realized cumulative-return line drawn over it
-// and a marker per written verdict read. Self-contained — does not share
-// code with netPnlChartSvg, which stays untouched.
+// horizon in view (grid points only, no interpolation, nothing below the
+// first horizon), with the realized cumulative-return line drawn over it and
+// a marker per written verdict read labelled with its overall_status.
 //
 // Inputs are adapter output only (public/cones.js), never raw cone fields:
 //   realized:   [{ row, cumReturn }]                  from realizedSeries(stream)
 //   gridPoints: [{ horizon, percentiles|null }]        from gridPointsInWindow(cone, lastRow)
 //   reads:      [{ horizon, y, label }]                from chartReads(cone, windowEnd)
-export function coneChartSvg({ realized, gridPoints, reads }, { width = 560, height = 200 } = {}) {
-  const realizedSeries = Array.isArray(realized) ? realized : [];
+// ---------------------------------------------------------------------------
+
+const CONE_PAD = { top: 18, right: 14, bottom: 24, left: 48 };
+
+function realizedSegments(coords, yZero) {
+  const segments = [];
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i];
+    const b = coords[i + 1];
+    if (bucket(a.v) === bucket(b.v)) {
+      segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, tone: bucket(a.v) });
+    } else {
+      const t = a.v / (a.v - b.v);
+      const crossX = a.x + (b.x - a.x) * t;
+      segments.push({ x1: a.x, y1: a.y, x2: crossX, y2: yZero, tone: bucket(a.v) });
+      segments.push({ x1: crossX, y1: yZero, x2: b.x, y2: b.y, tone: bucket(b.v) });
+    }
+  }
+  return segments;
+}
+
+function coneLegend() {
+  const item = (cls, label) => `<span class="legend__item"><span class="legend__swatch ${cls}"></span>${label}</span>`;
+  return `
+    <div class="legend">
+      ${item("legend__swatch--band", "Expected range p5–p95")}
+      ${item("legend__swatch--whisker", "p1")}
+      ${item("legend__swatch--median", "Median p50")}
+      ${item("legend__swatch--live", "Live path")}
+      ${item("legend__swatch--read", "Scheduled read")}
+    </div>
+  `;
+}
+
+export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, height = 240 } = {}) {
+  const realizedPoints = Array.isArray(realized) ? realized : [];
   const validGridPoints = (Array.isArray(gridPoints) ? gridPoints : []).filter((gp) => gp && gp.percentiles);
   const readMarkers = Array.isArray(reads) ? reads : [];
 
   if (validGridPoints.length === 0) {
-    return `<svg viewBox="0 0 ${width} ${height}" class="cone-chart cone-chart--empty"></svg>`;
+    return `<p class="empty-state">No cone percentiles in this artifact.</p>`;
   }
 
   const windowEnd = validGridPoints[validGridPoints.length - 1].horizon;
-  const lastRow = realizedSeries.length ? realizedSeries[realizedSeries.length - 1].row : 0;
+  const lastRow = realizedPoints.length ? realizedPoints[realizedPoints.length - 1].row : 0;
   const xDomainEnd = Math.max(windowEnd, lastRow, 1);
 
   const innerW = width - CONE_PAD.left - CONE_PAD.right;
   const innerH = height - CONE_PAD.top - CONE_PAD.bottom;
   const xAt = (row) => CONE_PAD.left + (row / xDomainEnd) * innerW;
 
-  const yValues = [0, ...realizedSeries.map((p) => p.cumReturn), ...readMarkers.map((r) => r.y)];
+  const yValues = [0, ...realizedPoints.map((p) => p.cumReturn), ...readMarkers.map((r) => r.y)];
   for (const gp of validGridPoints) yValues.push(gp.percentiles.p1, gp.percentiles.p95);
   const yMin = Math.min(...yValues);
   const yMax = Math.max(...yValues);
   const ySpan = yMax - yMin || 1;
   const yAt = (v) => CONE_PAD.top + innerH - ((v - yMin) / ySpan) * innerH;
   const yZero = yAt(0);
+  const bottom = CONE_PAD.top + innerH;
 
   const axes = `
-    <line x1="${CONE_PAD.left}" y1="${CONE_PAD.top}" x2="${CONE_PAD.left}" y2="${(CONE_PAD.top + innerH).toFixed(2)}" class="cone-chart__axis" />
-    <line x1="${CONE_PAD.left}" y1="${(CONE_PAD.top + innerH).toFixed(2)}" x2="${(CONE_PAD.left + innerW).toFixed(2)}" y2="${(CONE_PAD.top + innerH).toFixed(2)}" class="cone-chart__axis" />
-    <line x1="${CONE_PAD.left}" y1="${yZero.toFixed(2)}" x2="${(CONE_PAD.left + innerW).toFixed(2)}" y2="${yZero.toFixed(2)}" class="cone-chart__zero-line" />
+    <line x1="${CONE_PAD.left}" y1="${fixed(bottom)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(bottom)}" class="cone-chart__axis" />
+    <line x1="${CONE_PAD.left}" y1="${fixed(yZero)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(yZero)}" class="cone-chart__zero-line" />
   `;
 
-  const yTickValues = [...new Set([yMin, 0, yMax])];
-  const yTicks = yTickValues
+  const yTicks = [...new Set([yMin, 0, yMax])]
     .map(
       (v) => `
-      <line x1="${CONE_PAD.left - 4}" y1="${yAt(v).toFixed(2)}" x2="${CONE_PAD.left}" y2="${yAt(v).toFixed(2)}" class="cone-chart__tick" />
-      <text x="${(CONE_PAD.left - 8).toFixed(2)}" y="${yAt(v).toFixed(2)}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
+      <text x="${fixed(CONE_PAD.left - 8)}" y="${fixed(yAt(v))}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
     `,
     )
     .join("");
 
-  const xTicks = validGridPoints
-    .map((gp) => {
-      const x = xAt(gp.horizon).toFixed(2);
-      const y = (CONE_PAD.top + innerH).toFixed(2);
-      return `
-      <line x1="${x}" y1="${y}" x2="${x}" y2="${(CONE_PAD.top + innerH + 4).toFixed(2)}" class="cone-chart__tick" />
-      <text x="${x}" y="${(CONE_PAD.top + innerH + 15).toFixed(2)}" class="cone-chart__tick-label" text-anchor="middle">${gp.horizon}</text>
-    `;
-    })
+  const xTicks = [0, ...validGridPoints.map((gp) => gp.horizon)]
+    .map(
+      (row) => `
+      <text x="${fixed(xAt(row))}" y="${fixed(bottom + 16)}" class="cone-chart__tick-label" text-anchor="middle">${row}</text>
+    `,
+    )
     .join("");
 
   const barsAndWhiskers = validGridPoints
     .map((gp) => {
-      const x = xAt(gp.horizon).toFixed(2);
+      const x = fixed(xAt(gp.horizon));
       const pc = gp.percentiles;
       return `
-      <line x1="${x}" y1="${yAt(pc.p1).toFixed(2)}" x2="${x}" y2="${yAt(pc.p5).toFixed(2)}" class="cone-chart__whisker" />
-      <line x1="${x}" y1="${yAt(pc.p5).toFixed(2)}" x2="${x}" y2="${yAt(pc.p95).toFixed(2)}" class="cone-chart__bar" />
-      <line x1="${(xAt(gp.horizon) - 5).toFixed(2)}" y1="${yAt(pc.p50).toFixed(2)}" x2="${(xAt(gp.horizon) + 5).toFixed(2)}" y2="${yAt(pc.p50).toFixed(2)}" class="cone-chart__median" />
+      <line x1="${x}" y1="${fixed(yAt(pc.p1))}" x2="${x}" y2="${fixed(yAt(pc.p5))}" class="cone-chart__whisker" />
+      <line x1="${x}" y1="${fixed(yAt(pc.p5))}" x2="${x}" y2="${fixed(yAt(pc.p95))}" class="cone-chart__bar" />
+      <line x1="${fixed(xAt(gp.horizon) - 7)}" y1="${fixed(yAt(pc.p50))}" x2="${fixed(xAt(gp.horizon) + 7)}" y2="${fixed(yAt(pc.p50))}" class="cone-chart__median" />
     `;
     })
     .join("");
 
   let realizedLine = "";
-  if (realizedSeries.length === 1) {
-    const p = realizedSeries[0];
-    realizedLine = `<circle cx="${xAt(p.row).toFixed(2)}" cy="${yAt(p.cumReturn).toFixed(2)}" r="3" class="cone-chart__realized cone-chart__realized--${bucket(p.cumReturn)}" />`;
-  } else if (realizedSeries.length > 1) {
-    const coords = realizedSeries.map((p) => ({ x: xAt(p.row), y: yAt(p.cumReturn), v: p.cumReturn }));
-    const segments = [];
-    for (let i = 0; i < coords.length - 1; i++) {
-      const a = coords[i];
-      const b = coords[i + 1];
-      const bucketA = bucket(a.v);
-      const bucketB = bucket(b.v);
-      if (bucketA === bucketB) {
-        segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, color: bucketA });
-      } else {
-        const t = a.v / (a.v - b.v);
-        const crossX = a.x + (b.x - a.x) * t;
-        segments.push({ x1: a.x, y1: a.y, x2: crossX, y2: yZero, color: bucketA });
-        segments.push({ x1: crossX, y1: yZero, x2: b.x, y2: b.y, color: bucketB });
-      }
-    }
-    realizedLine = segments
+  if (realizedPoints.length === 1) {
+    const p = realizedPoints[0];
+    realizedLine = `<circle cx="${fixed(xAt(p.row))}" cy="${fixed(yAt(p.cumReturn))}" r="3" class="cone-chart__realized cone-chart__realized--${bucket(p.cumReturn)}" />`;
+  } else if (realizedPoints.length > 1) {
+    const coords = realizedPoints.map((p) => ({ x: xAt(p.row), y: yAt(p.cumReturn), v: p.cumReturn }));
+    realizedLine = realizedSegments(coords, yZero)
       .map(
         (s) =>
-          `<line x1="${s.x1.toFixed(2)}" y1="${s.y1.toFixed(2)}" x2="${s.x2.toFixed(2)}" y2="${s.y2.toFixed(2)}" class="cone-chart__realized cone-chart__realized--${s.color}" />`,
+          `<line x1="${fixed(s.x1)}" y1="${fixed(s.y1)}" x2="${fixed(s.x2)}" y2="${fixed(s.y2)}" class="cone-chart__realized cone-chart__realized--${s.tone}" />`,
       )
       .join("");
   }
 
   const markers = readMarkers
+    .filter((r) => typeof r.y === "number")
     .map((r) => {
-      const x = xAt(r.horizon).toFixed(2);
-      const y = yAt(r.y).toFixed(2);
+      const x = fixed(xAt(r.horizon));
+      const y = yAt(r.y);
       return `
-      <circle cx="${x}" cy="${y}" r="4" class="cone-chart__marker" />
-      <text x="${x}" y="${(yAt(r.y) - 8).toFixed(2)}" class="cone-chart__marker-label" text-anchor="middle">${escapeHtml(r.label ?? "")}</text>
+      <circle cx="${x}" cy="${fixed(y)}" r="4.5" class="cone-chart__marker" />
+      <text x="${x}" y="${fixed(y - 10)}" class="cone-chart__marker-label" text-anchor="middle">${escapeHtml(r.label ?? "")}</text>
     `;
     })
     .join("");
 
   return `
-    <svg viewBox="0 0 ${width} ${height}" class="cone-chart">
+    <svg viewBox="0 0 ${width} ${height}" class="cone-chart" role="img" aria-label="Expected range versus live path">
       ${axes}
       ${yTicks}
       ${xTicks}
@@ -252,5 +282,6 @@ export function coneChartSvg({ realized, gridPoints, reads }, { width = 560, hei
       ${realizedLine}
       ${markers}
     </svg>
+    ${coneLegend()}
   `;
 }

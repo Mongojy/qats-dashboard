@@ -3,14 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>qats-dashboard</title>
+  <meta name="theme-color" content="#0e100c" />
+  <meta name="color-scheme" content="dark" />
+  <title>QATS · Forward tests</title>
+  <link rel="preload" href="/fonts/IBMPlexSans-Regular-Latin1.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/fonts/IBMPlexSans-Medium-Latin1.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="layout">
-    <aside id="sidebar" class="sidebar"></aside>
-    <main id="view" class="view"></main>
+  <div class="app">
+    <header id="masthead" class="masthead"></header>
+    <div id="panes" class="panes" data-route="list">
+      <aside id="list" class="list-pane" aria-label="Streams"></aside>
+      <main id="detail" class="detail-pane"></main>
+    </div>
   </div>
+  <dialog id="glossary" class="glossary" aria-labelledby="glossary-title"></dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
