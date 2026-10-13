@@ -100,6 +100,21 @@ const TERMS = [
     body: "Implementation drift against a shadow replay of the same orders, with zero slippage on both sides — not market execution cost.",
   },
   {
+    term: "Universe",
+    was: "universe v1 / v2",
+    body: "The coin universe a stream was built on. The list shows one universe at a time; the reference stream appears in both.",
+    items: [
+      {
+        term: "v1",
+        body: "The top 15 of a pool curated with today's knowledge, so its backtests and cones carry a look-ahead. Its streams keep running and being read.",
+      },
+      {
+        term: "v2",
+        body: "A point-in-time universe with liquidity tiers. Successor streams start with new anchors on the day of the rebuild.",
+      },
+    ],
+  },
+  {
     term: "Vote",
     was: "vote",
     body: "The strategy's recorded vote, shown as stored. TSMOM v1: the current signal vote, recomputed daily. The TSMOM v3 streams (incl. gross cap and long-only): the vote at entry. Amihud and Bitcoin hold record none (dash).",

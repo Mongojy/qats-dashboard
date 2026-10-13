@@ -1,9 +1,10 @@
-// Left pane: filter chips + one card per stream (D4). Cards use the
+// Left pane: universe tabs + filter chips + one card per stream (D4). Cards use the
 // stretched-link pattern: the whole card is clickable through the title
 // link, while flag badges stay separately focusable for their tooltip.
 
 import { escapeHtml, fmtPct } from "../format.js";
 import { sparklineSvg } from "../chart.js";
+import { UNIVERSES } from "../strategies.js";
 import { flagBadges, statusChip } from "./ui.js";
 
 const FILTERS = [
@@ -12,6 +13,16 @@ const FILTERS = [
   ["on_track", "On track"],
   ["reference", "Reference"],
 ];
+
+function universeTabs(current) {
+  return `
+    <div class="tabs" role="tablist" aria-label="Universe">
+      ${UNIVERSES.map(
+        (u) =>
+          `<button type="button" class="tab" role="tab" id="universe-tab-${u.id}" data-universe="${u.id}" aria-selected="${u.id === current}" aria-controls="universe-panel" tabindex="${u.id === current ? 0 : -1}">${escapeHtml(u.label)}</button>`,
+      ).join("")}
+    </div>`;
+}
 
 function filterChips(current) {
   return `
@@ -28,7 +39,7 @@ function card(row, active, animate) {
   const pnl = row.livePnlPct;
   const tone = pnl === null ? "" : pnl >= 0 ? "up" : "down";
   const isReference = row.status.kind === "reference";
-  const nextText = row.next ? row.next.text : row.status.kind === "pending" ? "…" : null;
+  const nextText = row.next ? row.next.line : row.status.kind === "pending" ? "…" : null;
 
   return `
     <article class="card${active ? " is-active" : ""}${animate ? " desk-enter" : ""}">
@@ -62,10 +73,17 @@ function card(row, active, animate) {
     </article>`;
 }
 
-// rows: already filtered + sorted by the caller.
-export function renderList({ rows, filter, selectedId, animate }) {
-  const body = rows.length
-    ? rows.map((r) => card(r, r.id === selectedId, animate)).join("")
-    : `<p class="empty-state">Nothing in this filter.</p>`;
-  return `${filterChips(filter)}<div class="cards">${body}</div>`;
+// rows: already filtered (universe + chip) and sorted by the caller.
+// universeEmpty: the active universe holds no non-reference stream — its
+// empty-state copy then follows whatever cards (the reference) remain.
+export function renderList({ rows, universe, universeEmpty, filter, selectedId, animate }) {
+  const cards = rows.map((r) => card(r, r.id === selectedId, animate)).join("");
+  const emptyCopy = universeEmpty ? UNIVERSES.find((u) => u.id === universe)?.empty : null;
+  let empty = "";
+  if (emptyCopy) empty = `<p class="empty-state">${escapeHtml(emptyCopy)}</p>`;
+  else if (!rows.length) empty = `<p class="empty-state">Nothing in this filter.</p>`;
+  return `${universeTabs(universe)}
+    <div id="universe-panel" role="tabpanel" aria-labelledby="universe-tab-${escapeHtml(universe)}">
+      ${filterChips(filter)}<div class="cards">${cards}${empty}</div>
+    </div>`;
 }

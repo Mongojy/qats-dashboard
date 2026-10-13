@@ -3,6 +3,7 @@
 // either a number formatted here or a string passed through escapeHtml.
 
 import { escapeHtml, fmtDay } from "./format.js";
+import { weekBandSpans } from "./calendar.js";
 
 function bucket(value) {
   return value >= 0 ? "pos" : "neg";
@@ -24,9 +25,54 @@ function fixed(n) {
   return n.toFixed(2);
 }
 
+// Week bands (calendar.js weekBandSpans): only the brighter weeks are drawn;
+// the others are the chart's own background. Always the first layer.
+function weekBandRects(spans, y, height) {
+  return spans
+    .filter((s) => s.alt)
+    .map(
+      (s) =>
+        `<rect x="${fixed(s.x1)}" y="${fixed(y)}" width="${fixed(s.x2 - s.x1)}" height="${fixed(height)}" class="week-band" />`,
+    )
+    .join("");
+}
+
+// Splits a polyline at its interpolated zero crossings into runs of one
+// sign — values >= 0 "pos", < 0 "neg" — shared by every chart that colours
+// a line by sign. coords: [{ x, y, v }]; yZero: the y of value 0. A point
+// exactly at 0 never yields an empty piece. Returns [{ tone, points: [{ x, y }] }].
+export function signRuns(coords, yZero) {
+  const runs = [];
+  const add = (a, b, tone) => {
+    if (a.x === b.x && a.y === b.y) return;
+    const run = runs[runs.length - 1];
+    const end = run?.points[run.points.length - 1];
+    if (run && run.tone === tone && end.x === a.x && end.y === a.y) run.points.push({ x: b.x, y: b.y });
+    else runs.push({ tone, points: [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] });
+  };
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i];
+    const b = coords[i + 1];
+    if (bucket(a.v) === bucket(b.v)) {
+      add(a, b, bucket(a.v));
+    } else {
+      const t = a.v / (a.v - b.v);
+      const cross = { x: a.x + (b.x - a.x) * t, y: yZero };
+      add(a, cross, bucket(a.v));
+      add(cross, b, bucket(b.v));
+    }
+  }
+  return runs;
+}
+
+function runPath(run) {
+  return run.points.map((p, i) => `${i === 0 ? "M" : "L"}${fixed(p.x)} ${fixed(p.y)}`).join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // Sparkline (strategy card). Input: liveSeries(stream) -> [{ date, pct }].
-// Zero baseline + one path coloured by the sign of the last point.
+// Zero baseline + the line split at zero crossings (signRuns), one path per
+// tone like the live path; line only — at this size a fill is noise.
 // ---------------------------------------------------------------------------
 
 export function sparklineSvg(points) {
@@ -41,13 +87,21 @@ export function sparklineSvg(points) {
   const span = max - min || 1;
   const xAt = (i) => pad + (i / Math.max(values.length - 1, 1)) * (w - pad * 2);
   const yAt = (v) => pad + (1 - (v - min) / span) * (h - pad * 2);
-  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${fixed(xAt(i))} ${fixed(yAt(v))}`).join(" ");
-  const tone = bucket(values[values.length - 1]);
+  let lines;
+  if (values.length === 1) {
+    lines = `<path d="M${fixed(xAt(0))} ${fixed(yAt(values[0]))}" class="spark__line spark__line--${bucket(values[0])}" vector-effect="non-scaling-stroke" />`;
+  } else {
+    const runs = signRuns(values.map((v, i) => ({ x: xAt(i), y: yAt(v), v })), yAt(0));
+    lines = ["pos", "neg"]
+      .map((tone) => runs.filter((r) => r.tone === tone).map(runPath).join(" "))
+      .map((d, i) => (d ? `<path d="${d}" class="spark__line spark__line--${i === 0 ? "pos" : "neg"}" vector-effect="non-scaling-stroke" />` : ""))
+      .join("");
+  }
 
   return `
     <svg viewBox="0 0 ${w} ${h}" class="spark" preserveAspectRatio="none" aria-hidden="true">
       <line x1="0" x2="${w}" y1="${fixed(yAt(0))}" y2="${fixed(yAt(0))}" class="spark__zero" />
-      <path d="${d}" class="spark__line spark__line--${tone}" vector-effect="non-scaling-stroke" />
+      ${lines}
     </svg>
   `;
 }
@@ -76,24 +130,11 @@ function splitBySign(values, w, h) {
   const z = yAt(0);
   const line = { pos: [], neg: [] };
   const area = { pos: [], neg: [] };
-
-  const push = (a, b, tone) => {
-    const seg = `M${fixed(a.x)} ${fixed(a.y)} L${fixed(b.x)} ${fixed(b.y)}`;
-    line[tone].push(seg);
-    area[tone].push(`${seg} L${fixed(b.x)} ${fixed(z)} L${fixed(a.x)} ${fixed(z)} Z`);
-  };
-
-  for (let i = 0; i < xy.length - 1; i++) {
-    const a = xy[i];
-    const b = xy[i + 1];
-    if (bucket(a.v) === bucket(b.v)) {
-      push(a, b, bucket(a.v));
-    } else {
-      const t = a.v / (a.v - b.v);
-      const cross = { x: a.x + (b.x - a.x) * t, y: z, v: 0 };
-      push(a, cross, bucket(a.v));
-      push(cross, b, bucket(b.v));
-    }
+  for (const run of signRuns(xy, z)) {
+    const first = run.points[0];
+    const last = run.points[run.points.length - 1];
+    line[run.tone].push(runPath(run));
+    area[run.tone].push(`${runPath(run)} L${fixed(last.x)} ${fixed(z)} L${fixed(first.x)} ${fixed(z)} Z`);
   }
   return { z, line, area };
 }
@@ -124,18 +165,26 @@ export function livePathSvg(points) {
     `;
   }
   const z = yAt(0);
+  // The max / min overlay labels are left empty when that extreme is the
+  // last point: the last-value label already shows it (the empty max span
+  // keeps the last label on the right).
+  // x is index-based (unchanged geometry); bands map dates through the same
+  // per-point x, so a date gap would still land on the right x.
+  const bandPoints = series.length > 1 ? series.map((p, i) => ({ date: p.date, x: (i / (series.length - 1)) * w })) : [];
+  const bands = weekBandRects(weekBandSpans(bandPoints, { x0: 0, x1: w }), 0, h);
 
   return `
     <div class="live-path">
       <svg viewBox="0 0 ${w} ${h}" class="live-path__svg" preserveAspectRatio="none" role="img" aria-label="Live P&amp;L path from the anchor close">
+        ${bands}
         <line x1="0" x2="${w}" y1="${fixed(z)}" y2="${fixed(z)}" class="live-path__zero" vector-effect="non-scaling-stroke" />
         ${plot}
       </svg>
       <div class="live-path__top">
-        <span class="tabular">${fmtPctLabel(max)}</span>
+        <span class="tabular">${last === max ? "" : fmtPctLabel(max)}</span>
         <span class="tabular live-path__last live-path__last--${bucket(last)}">${fmtPctLabel(last, 2)}</span>
       </div>
-      <div class="live-path__bottom"><span class="tabular">${fmtPctLabel(min)}</span></div>
+      <div class="live-path__bottom"><span class="tabular">${last === min ? "" : fmtPctLabel(min)}</span></div>
     </div>
     <div class="live-path__dates">
       <span>${escapeHtml(fmtDay(series[0].date))}</span>
@@ -154,25 +203,86 @@ export function livePathSvg(points) {
 //   realized:   [{ row, cumReturn }]                  from realizedSeries(stream)
 //   gridPoints: [{ horizon, percentiles|null }]        from gridPointsInWindow(cone, lastRow)
 //   reads:      [{ horizon, y, label }]                from chartReads(cone, windowEnd)
+//   horizonDates: [{ horizon, label, role }]           from horizonDateLabels(...)
 // ---------------------------------------------------------------------------
 
 const CONE_PAD = { top: 18, right: 14, bottom: 24, left: 48 };
+// Extra viewBox height under the x axis for the date line below the horizon
+// ticks; the plot (pad, innerH, y-domain) is unchanged.
+const CONE_DATE_LINE = 12;
+const TICK_FONT_PX = 11;
+const LABEL_GAP = 4;
+// y labels end Y_LABEL_GAP left of the plot; the left pad grows past
+// CONE_PAD.left only when the widest label (+ Y_LABEL_MARGIN) would not fit.
+const Y_LABEL_GAP = 8;
+const Y_LABEL_MARGIN = 2;
 
-function realizedSegments(coords, yZero) {
-  const segments = [];
-  for (let i = 0; i < coords.length - 1; i++) {
-    const a = coords[i];
-    const b = coords[i + 1];
-    if (bucket(a.v) === bucket(b.v)) {
-      segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, tone: bucket(a.v) });
-    } else {
-      const t = a.v / (a.v - b.v);
-      const crossX = a.x + (b.x - a.x) * t;
-      segments.push({ x1: a.x, y1: a.y, x2: crossX, y2: yZero, tone: bucket(a.v) });
-      segments.push({ x1: crossX, y1: yZero, x2: b.x, y2: b.y, tone: bucket(b.v) });
+// Advance widths (em) of IBM Plex Sans Regular, the tick-label font,
+// measured in the browser (canvas measureText, 2026-10-13) for the glyphs of
+// "≈27 Nov 2027"-style date labels and "+298.2%"-style y labels; anything
+// unlisted uses the widest (M).
+const PLEX_SANS_EM = {
+  ...Object.fromEntries([..."0123456789"].map((d) => [d, 0.6])),
+  " ": 0.236,
+  "≈": 0.604,
+  "+": 0.6, "-": 0.399, ".": 0.272, "%": 0.927,
+  A: 0.641, D: 0.671, F: 0.559, J: 0.51, M: 0.812, N: 0.707, O: 0.708, S: 0.581,
+  a: 0.534, b: 0.58, c: 0.503, e: 0.549, g: 0.528, l: 0.272, n: 0.568, o: 0.56,
+  p: 0.58, r: 0.367, t: 0.351, u: 0.568, v: 0.492, y: 0.499,
+  FALLBACK: 0.812,
+};
+
+export function tickLabelWidth(text) {
+  let em = 0;
+  for (const ch of String(text)) em += PLEX_SANS_EM[ch] ?? PLEX_SANS_EM.FALLBACK;
+  return em * TICK_FONT_PX;
+}
+
+// Places the date labels under their horizon ticks. "latest" and "next"
+// always stay (pushed apart by anchoring "end" / "start" when they would
+// overlap centred); "older" read dates are dropped oldest first when they
+// collide with anything already placed. Input order: newest first. Labels
+// are kept inside [0, width]: one that would overflow the right edge is
+// right-aligned to it (the last grid horizon sits on the plot's edge).
+// Returns [{ horizon, label, role, anchor, x }].
+export function placeDateLabels(items, xAt, width = Infinity) {
+  const extent = (p) => {
+    const w = tickLabelWidth(p.label);
+    const left = p.anchor === "end" ? p.x - w : p.anchor === "start" ? p.x : p.x - w / 2;
+    return { left, right: left + w };
+  };
+  const overlaps = (a, b) => a.left < b.right + LABEL_GAP && b.left < a.right + LABEL_GAP;
+  const fit = (p) => {
+    const e = extent(p);
+    if (e.right > width - 1) return { ...p, anchor: "end", x: width - 1 };
+    if (e.left < 1) return { ...p, anchor: "start", x: 1 };
+    return p;
+  };
+  const at = (item, anchor) => ({ ...item, anchor, x: xAt(item.horizon) });
+
+  const seen = new Set();
+  const unique = items.filter((i) => !seen.has(i.horizon) && seen.add(i.horizon));
+  const latest = unique.find((i) => i.role === "latest");
+  const next = unique.find((i) => i.role === "next");
+  const placed = [];
+  if (latest && next) {
+    let l = fit(at(latest, "middle"));
+    let n = fit(at(next, "middle"));
+    if (overlaps(extent(l), extent(n))) {
+      l = fit(at(latest, "end"));
+      n = fit(at(next, "start"));
+      // next pulled in from the right edge: latest moves left of it.
+      if (overlaps(extent(l), extent(n))) l = { ...l, anchor: "end", x: extent(n).left - LABEL_GAP };
     }
+    placed.push(l, n);
+  } else {
+    for (const item of [latest, next]) if (item) placed.push(fit(at(item, "middle")));
   }
-  return segments;
+  for (const item of unique.filter((i) => i.role === "older")) {
+    const p = fit(at(item, "middle"));
+    if (placed.every((q) => !overlaps(extent(p), extent(q)))) placed.push(p);
+  }
+  return placed;
 }
 
 function coneLegend() {
@@ -188,7 +298,7 @@ function coneLegend() {
   `;
 }
 
-export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, height = 240 } = {}) {
+export function coneChartSvg({ realized, gridPoints, reads, horizonDates }, { width = 640, height = 240 } = {}) {
   const realizedPoints = Array.isArray(realized) ? realized : [];
   const validGridPoints = (Array.isArray(gridPoints) ? gridPoints : []).filter((gp) => gp && gp.percentiles);
   const readMarkers = Array.isArray(reads) ? reads : [];
@@ -201,28 +311,31 @@ export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, hei
   const lastRow = realizedPoints.length ? realizedPoints[realizedPoints.length - 1].row : 0;
   const xDomainEnd = Math.max(windowEnd, lastRow, 1);
 
-  const innerW = width - CONE_PAD.left - CONE_PAD.right;
-  const innerH = height - CONE_PAD.top - CONE_PAD.bottom;
-  const xAt = (row) => CONE_PAD.left + (row / xDomainEnd) * innerW;
-
   const yValues = [0, ...realizedPoints.map((p) => p.cumReturn), ...readMarkers.map((r) => r.y)];
   for (const gp of validGridPoints) yValues.push(gp.percentiles.p1, gp.percentiles.p95);
   const yMin = Math.min(...yValues);
   const yMax = Math.max(...yValues);
+  const yTickValues = [...new Set([yMin, 0, yMax])];
+  const widestY = Math.max(...yTickValues.map((v) => tickLabelWidth(fmtFracPctLabel(v))));
+  const left = Math.max(CONE_PAD.left, Math.ceil(widestY + Y_LABEL_GAP + Y_LABEL_MARGIN));
+
+  const innerW = width - left - CONE_PAD.right;
+  const innerH = height - CONE_PAD.top - CONE_PAD.bottom;
+  const xAt = (row) => left + (row / xDomainEnd) * innerW;
   const ySpan = yMax - yMin || 1;
   const yAt = (v) => CONE_PAD.top + innerH - ((v - yMin) / ySpan) * innerH;
   const yZero = yAt(0);
   const bottom = CONE_PAD.top + innerH;
 
   const axes = `
-    <line x1="${CONE_PAD.left}" y1="${fixed(bottom)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(bottom)}" class="cone-chart__axis" />
-    <line x1="${CONE_PAD.left}" y1="${fixed(yZero)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(yZero)}" class="cone-chart__zero-line" />
+    <line x1="${left}" y1="${fixed(bottom)}" x2="${fixed(left + innerW)}" y2="${fixed(bottom)}" class="cone-chart__axis" />
+    <line x1="${left}" y1="${fixed(yZero)}" x2="${fixed(left + innerW)}" y2="${fixed(yZero)}" class="cone-chart__zero-line" />
   `;
 
-  const yTicks = [...new Set([yMin, 0, yMax])]
+  const yTicks = yTickValues
     .map(
       (v) => `
-      <text x="${fixed(CONE_PAD.left - 8)}" y="${fixed(yAt(v))}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
+      <text x="${fixed(left - Y_LABEL_GAP)}" y="${fixed(yAt(v))}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
     `,
     )
     .join("");
@@ -231,6 +344,16 @@ export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, hei
     .map(
       (row) => `
       <text x="${fixed(xAt(row))}" y="${fixed(bottom + 16)}" class="cone-chart__tick-label" text-anchor="middle">${row}</text>
+    `,
+    )
+    .join("");
+
+  const gridHorizons = new Set(validGridPoints.map((gp) => gp.horizon));
+  const dateItems = (Array.isArray(horizonDates) ? horizonDates : []).filter((d) => gridHorizons.has(d.horizon));
+  const dateLabels = placeDateLabels(dateItems, xAt, width)
+    .map(
+      (d) => `
+      <text x="${fixed(d.x)}" y="${fixed(bottom + 16 + CONE_DATE_LINE)}" class="cone-chart__tick-label cone-chart__date-label" text-anchor="${d.anchor}">${escapeHtml(d.label)}</text>
     `,
     )
     .join("");
@@ -253,7 +376,10 @@ export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, hei
     realizedLine = `<circle cx="${fixed(xAt(p.row))}" cy="${fixed(yAt(p.cumReturn))}" r="3" class="cone-chart__realized cone-chart__realized--${bucket(p.cumReturn)}" />`;
   } else if (realizedPoints.length > 1) {
     const coords = realizedPoints.map((p) => ({ x: xAt(p.row), y: yAt(p.cumReturn), v: p.cumReturn }));
-    realizedLine = realizedSegments(coords, yZero)
+    realizedLine = signRuns(coords, yZero)
+      .flatMap((run) =>
+        run.points.slice(1).map((b, i) => ({ x1: run.points[i].x, y1: run.points[i].y, x2: b.x, y2: b.y, tone: run.tone })),
+      )
       .map(
         (s) =>
           `<line x1="${fixed(s.x1)}" y1="${fixed(s.y1)}" x2="${fixed(s.x2)}" y2="${fixed(s.y2)}" class="cone-chart__realized cone-chart__realized--${s.tone}" />`,
@@ -274,10 +400,11 @@ export function coneChartSvg({ realized, gridPoints, reads }, { width = 640, hei
     .join("");
 
   return `
-    <svg viewBox="0 0 ${width} ${height}" class="cone-chart" role="img" aria-label="Expected range versus live path">
+    <svg viewBox="0 0 ${width} ${height + CONE_DATE_LINE}" class="cone-chart" role="img" aria-label="Expected range versus live path">
       ${axes}
       ${yTicks}
       ${xTicks}
+      ${dateLabels}
       ${barsAndWhiskers}
       ${realizedLine}
       ${markers}

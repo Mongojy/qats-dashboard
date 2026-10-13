@@ -23,6 +23,7 @@ import {
   chartReads,
   realizedSeries,
   statusLabel,
+  horizonDateLabels,
 } from "../cones.js";
 import { strategyMeta } from "../strategies.js";
 import { escapeHtml, fmtDay, fmtLevelPct, fmtOrDash, fmtPct, fmtStamp, fmtUsd } from "../format.js";
@@ -73,7 +74,7 @@ function verdictProgressSection(stream, status, next) {
   let sub;
   if (status.kind === "pending") sub = "…";
   else if (status.kind === "unknown") sub = "Next read: verdict data unavailable";
-  else sub = next ? escapeHtml(next.text) + estimateTag(next) : "—";
+  else sub = next ? escapeHtml(next.line) + estimateTag(next) : "—";
   const vp = verdictProgress(stream);
   return `
     <section class="section">
@@ -122,14 +123,22 @@ function generatedLine(payload) {
   return `<p class="generated mono">Cone generated ${escapeHtml(at ? fmtStamp(at) : "—")} UTC</p>`;
 }
 
-function coneBody(stream, cone, payload, coneWidth) {
+function coneBody(stream, cone, payload, coneWidth, next, asOfDate) {
   const realized = realizedSeries(stream);
   const lastRow = realized.length ? realized[realized.length - 1].row : 0;
   const gridPoints = gridPointsInWindow(cone, lastRow);
   const windowEnd = gridPoints.length ? gridPoints[gridPoints.length - 1].horizon : lastRow;
   const mismatched = mismatchedReads(cone);
   return `
-    ${coneChartSvg({ realized, gridPoints, reads: chartReads(cone, windowEnd) }, { width: coneWidth, height: 240 })}
+    ${coneChartSvg(
+      {
+        realized,
+        gridPoints,
+        reads: chartReads(cone, windowEnd),
+        horizonDates: horizonDateLabels(stream, cone, next, asOfDate),
+      },
+      { width: coneWidth, height: 240 },
+    )}
     ${latestReadBlock(latestRead(cone))}
     ${mismatched.length > 0 ? mismatchWarning(mismatched) : ""}
     ${isUntrimmed(cone) ? `<p class="caption caption--warning">${UNTRIMMED_CAPTION}</p>` : ""}
@@ -139,12 +148,12 @@ function coneBody(stream, cone, payload, coneWidth) {
 }
 
 function coneSection(ctx) {
-  const { stream, status, cone, conesPayload, coneWidth } = ctx;
+  const { stream, status, cone, conesPayload, coneWidth, next, asOfDate } = ctx;
   let body;
   if (status.kind === "pending") body = `<p class="empty-state">Loading verdict cone…</p>`;
   else if (status.kind === "unknown") body = `<p class="empty-state">Cone data unavailable</p>`;
   else if (cone === null) body = `<p class="empty-state">Reference stream — no cone.</p>${generatedLine(conesPayload)}`;
-  else body = coneBody(stream, cone, conesPayload, coneWidth);
+  else body = coneBody(stream, cone, conesPayload, coneWidth, next, asOfDate);
 
   return `
     <section class="section" id="cone-section">
@@ -156,8 +165,8 @@ function coneSection(ctx) {
     </section>`;
 }
 
-// ctx: { stream, status, flags, next, cone (handle | null | undefined),
-//        conesPayload, coneWidth, positionsMode }
+// ctx: { stream, status, flags, next (row.next), cone (handle | null | undefined),
+//        conesPayload, coneWidth, positionsMode, asOfDate }
 export function renderDetail(ctx) {
   const { stream, status, flags, next, positionsMode } = ctx;
   const id = streamId(stream);

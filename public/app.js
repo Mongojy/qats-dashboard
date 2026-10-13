@@ -2,7 +2,19 @@
 // UI state and the hash router, and wires DOM events. Everything payload-
 // shaped goes through data.js / cones.js; markup comes from views/*.
 
-import { getAsOfDate, findStream, openPositions, bookStats, briefing, matchesFilter, sortByLivePnl } from "./data.js";
+import {
+  getAsOfDate,
+  findStream,
+  openPositions,
+  bookStats,
+  briefing,
+  matchesFilter,
+  matchesUniverse,
+  hasUnpinned,
+  defaultUniverse,
+  sortForList,
+  firstSelectable,
+} from "./data.js";
 import { loadCones, coneFor, readsWrittenCount } from "./cones.js";
 import { buildRows } from "./rows.js";
 import { escapeHtml } from "./format.js";
@@ -27,6 +39,7 @@ const state = {
   summary: null,
   conesPayload: null,
   conesState: "loading", // "loading" | "ready" | "failed"
+  universe: null, // "v1" | "v2"; set from the summary on first render
   filter: "all",
   positionsMode: "ranked",
   animateList: true,
@@ -47,8 +60,9 @@ function allRows() {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: #/ -> first card of the current filter; #/stream/{id} -> that one.
-// The route also decides list vs detail on narrow screens.
+// Routing: #/ -> first non-reference card of the current tab + filter;
+// #/stream/{id} -> that one (and its universe tab). The route also decides
+// list vs detail on narrow screens.
 // ---------------------------------------------------------------------------
 
 function currentRoute() {
@@ -62,14 +76,28 @@ function currentRoute() {
   }
 }
 
+function tabRows(rows) {
+  return rows.filter((r) => matchesUniverse(r, state.universe));
+}
+
 function visibleRows(rows) {
-  return sortByLivePnl(rows.filter((r) => matchesFilter(r, state.filter)));
+  return sortForList(tabRows(rows).filter((r) => matchesFilter(r, state.filter)));
 }
 
 function selectedId(rows) {
   const route = currentRoute();
   if (route.id !== null) return route.id;
-  return visibleRows(rows)[0]?.id ?? sortByLivePnl(rows)[0]?.id ?? null;
+  return (firstSelectable(visibleRows(rows)) ?? firstSelectable(sortForList(tabRows(rows))) ?? firstSelectable(sortForList(rows)))?.id ?? null;
+}
+
+// Deep link: the active tab follows the routed stream's universe. Pinned
+// (reference) streams are in every tab, so they leave the tab alone; an id
+// not in the summary changes nothing.
+function syncUniverseToRoute(rows) {
+  if (state.universe === null) state.universe = defaultUniverse(rows);
+  const { id } = currentRoute();
+  const row = id === null ? null : rows.find((r) => r.id === id);
+  if (row && !row.pinned) state.universe = row.universe;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +117,8 @@ function renderMasthead(rows) {
 function renderListPane(rows) {
   listEl.innerHTML = renderList({
     rows: visibleRows(rows),
+    universe: state.universe,
+    universeEmpty: !hasUnpinned(rows, state.universe),
     filter: state.filter,
     selectedId: selectedId(rows),
     animate: state.animateList,
@@ -111,6 +141,7 @@ function renderDetailPane(rows) {
     next: row.next,
     cone: coneHandle(id),
     conesPayload: state.conesPayload,
+    asOfDate: getAsOfDate(state.summary),
     coneWidth: narrowQuery.matches ? 360 : 640,
     positionsMode: state.positionsMode,
   });
@@ -119,6 +150,7 @@ function renderDetailPane(rows) {
 function renderAll() {
   if (!state.summary) return;
   const rows = allRows();
+  if (state.universe === null) state.universe = defaultUniverse(rows);
   panesEl.dataset.route = currentRoute().id === null ? "list" : "detail";
   renderMasthead(rows);
   renderListPane(rows);
@@ -163,9 +195,41 @@ async function loadSummary() {
 // Events
 // ---------------------------------------------------------------------------
 
+// Tab and chip changes re-render the list; the detail follows only on route
+// #/ (its default card). On #/stream/{id} the detail stays as it is, even
+// when the new tab does not hold that stream — no navigation.
+function refreshListAndDefaultDetail() {
+  const rows = allRows();
+  renderListPane(rows);
+  if (currentRoute().id === null) {
+    renderDetailPane(rows);
+    detailEl.scrollTop = 0;
+  }
+}
+
+function selectUniverse(universe, { focus = false } = {}) {
+  state.universe = universe;
+  refreshListAndDefaultDetail();
+  if (focus) listEl.querySelector(`[data-universe="${universe}"]`)?.focus();
+}
+
+// Tablist keyboard pattern: arrows / Home / End move and activate.
+listEl.addEventListener("keydown", (event) => {
+  const tab = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
+  if (!tab) return;
+  const tabs = [...listEl.querySelectorAll('[role="tab"]')];
+  const i = tabs.indexOf(tab);
+  const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[event.key];
+  if (to === undefined) return;
+  event.preventDefault();
+  const next = tabs[(to + tabs.length) % tabs.length];
+  selectUniverse(next.dataset.universe, { focus: true });
+});
+
 function onRouteChange(prevRouteWasList) {
   if (state.conesState === "failed") startCones();
   const route = currentRoute();
+  if (state.summary) syncUniverseToRoute(allRows());
   renderAll();
 
   if (splitQuery.matches) {
@@ -189,15 +253,17 @@ document.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
 
+  const universeBtn = target.closest("[data-universe]");
+  if (universeBtn) {
+    // The re-render replaces the clicked button; keep focus on the tab.
+    selectUniverse(universeBtn.dataset.universe, { focus: true });
+    return;
+  }
+
   const filterBtn = target.closest("[data-filter]");
   if (filterBtn) {
     state.filter = filterBtn.dataset.filter;
-    const rows = allRows();
-    renderListPane(rows);
-    if (currentRoute().id === null) {
-      renderDetailPane(rows);
-      detailEl.scrollTop = 0;
-    }
+    refreshListAndDefaultDetail();
     return;
   }
 
@@ -254,6 +320,7 @@ async function init() {
   startCones();
   try {
     state.summary = await loadSummary();
+    syncUniverseToRoute(allRows());
     renderAll();
   } catch (err) {
     renderError(err.message);

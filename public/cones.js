@@ -6,7 +6,9 @@
 // Pure module apart from loadCones()'s fetch — no DOM, nothing runs at
 // import time, so web-tests/ can import it in node.
 
-import { rowIndex, verdictProgress } from "./data.js";
+import { rowIndex, rowDates, verdictProgress } from "./data.js";
+import { dateAtRow } from "./calendar.js";
+import { fmtShortDay } from "./format.js";
 
 const NA = "n/a";
 
@@ -158,6 +160,41 @@ export function nextRead(stream, cone) {
   const next = grid.find((h) => h >= floor);
   if (next === undefined) return gridEnd(grid);
   return scheduledAt(next, index);
+}
+
+// Date of a horizon row: the row's own date when it is realized, else
+// extrapolated one day per row from the last row ("≈"). The "≈" always comes
+// from the row arithmetic, never from the next-read state's name.
+function horizonDateLabel(stream, horizon, asOfDate) {
+  const at = dateAtRow(rowDates(stream), horizon);
+  if (!at) return null;
+  return `${at.estimated ? "≈" : ""}${fmtShortDay(at.iso, asOfDate)}`;
+}
+
+// "27 Nov" / "≈27 Nov" for the next read's row, or null for states without
+// a horizon (waiting on trades, trade-starved, beyond the grid, reference).
+// asOfDate: the summary's as_of_date — the year is shown only when it differs.
+export function nextReadDate(stream, next, asOfDate) {
+  if (!next || typeof next.row !== "number") return null;
+  return horizonDateLabel(stream, next.row, asOfDate);
+}
+
+// Date labels for the cone chart's grid horizons: one per written read (its
+// as_of) and one for the next scheduled read's horizon — nothing else.
+//   [{ horizon, label, role }]  role "latest" | "next" | "older"
+// "older" entries are ordered newest first (the chart drops them in reverse
+// on collision); "latest" and "next" always stay.
+export function horizonDateLabels(stream, cone, next, asOfDate) {
+  const all = reads(cone).filter((r) => typeof r.horizon === "number" && typeof r.as_of === "string");
+  const out = [];
+  all.forEach((r, i) => {
+    out.push({ horizon: r.horizon, label: fmtShortDay(r.as_of, asOfDate), role: i === all.length - 1 ? "latest" : "older", order: i });
+  });
+  const nextLabel = nextReadDate(stream, next, asOfDate);
+  if (nextLabel && !out.some((o) => o.horizon === next.row)) {
+    out.push({ horizon: next.row, label: nextLabel, role: "next", order: Infinity });
+  }
+  return out.sort((a, b) => b.order - a.order).map(({ horizon, label, role }) => ({ horizon, label, role }));
 }
 
 // Card bar, in percent (0–100), or null for no bar. Row-index basis:

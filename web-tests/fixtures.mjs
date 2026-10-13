@@ -10,6 +10,10 @@ function series(anchor, rows, endPct = 0) {
   }));
 }
 
+export function makeStream(id, anchor, rows, closed, opts) {
+  return stream(id, anchor, rows, closed, opts);
+}
+
 function stream(id, anchor, rows, closed, { pnl = 0, flags = {}, positions } = {}) {
   const equity_series = series(anchor, rows, pnl);
   return {
