@@ -17,14 +17,18 @@ import {
   livePnlPct,
   liveSeries,
   matchesFilter,
+  defaultUniverse,
+  firstSelectable,
+  sortForList,
+  getAsOfDate,
   raisedFlags,
   rowIndex,
   sortByLivePnl,
 } from "../public/data.js";
-import { coneFor, nextRead, nextReadProgressPct, readsWrittenCount, streamStatus } from "../public/cones.js";
+import { coneFor, horizonDateLabels, nextRead, nextReadProgressPct, readsWrittenCount, streamStatus } from "../public/cones.js";
 import { buildRows } from "../public/rows.js";
 import { strategyMeta } from "../public/strategies.js";
-import { escapeHtml, fmtDay, fmtPct, fmtUsd } from "../public/format.js";
+import { escapeHtml, fmtDay, fmtPct, fmtShortDay, fmtUsd } from "../public/format.js";
 import { coneChartSvg } from "../public/chart.js";
 import { makeCone, makeCones, makeSummary, read } from "./fixtures.mjs";
 
@@ -276,7 +280,7 @@ describe("format and metadata", () => {
 
   it("falls back to the raw id for unknown strategies", () => {
     expect(strategyMeta("tsmom_v1").name).toBe("TSMOM v1");
-    expect(strategyMeta("new_stream_v9")).toEqual({ name: "new_stream_v9", style: "—", thesis: null });
+    expect(strategyMeta("new_stream_v9")).toEqual({ name: "new_stream_v9", style: "—", thesis: null, universe: "v2" });
     expect(strategyMeta("__proto__").name).toBe("__proto__");
   });
 });
@@ -298,5 +302,28 @@ describe.skipIf(!hasReal)("local real fixtures (2026-09-26)", () => {
       expect(nextText(summary, cones, id), id).toBe(text);
     }
     expect(briefing(buildRows(summary, "ready", cones), true, readsWrittenCount(cones))).toBe(D2_BRIEFING);
+  });
+
+  it("list order, default tab and read dates", () => {
+    const summary = load(REAL_SUMMARY);
+    const cones = load(REAL_CONES);
+    const rows = buildRows(summary, "ready", cones);
+    const sorted = sortForList(rows);
+    expect(sorted.map((r) => r.id)).toEqual([
+      "btc_hold_baseline",
+      "amihud_lo_v1",
+      "f_lo_1_0",
+      "v3_gross_cap_1_0",
+      "tsmom_v1",
+      "tsmom_v3_4h_3d_ls",
+    ]);
+    expect(firstSelectable(sorted).id).toBe("amihud_lo_v1");
+    expect(defaultUniverse(rows)).toBe("v1");
+    const asOf = getAsOfDate(summary);
+    const fLo = rows.find((r) => r.id === "f_lo_1_0");
+    expect(fLo.next.dateLabel).toBe(`≈${fmtShortDay("2026-11-27", asOf)}`);
+    const v1 = rows.find((r) => r.id === "tsmom_v1");
+    const labels = horizonDateLabels(findStream(summary, "tsmom_v1"), coneFor(cones, "tsmom_v1"), v1.next, asOf);
+    expect(labels.find((l) => l.role === "latest")).toEqual({ horizon: 90, label: fmtShortDay("2026-09-10", asOf), role: "latest" });
   });
 });

@@ -62,13 +62,33 @@ export function fmtOrDash(value) {
   return value === null || value === undefined || value === "" ? "—" : String(value);
 }
 
+// Every en-GB day label on the page goes through this one formatter, so the
+// engine-dependent month abbreviation ("Sept" vs "Sep") always matches.
+function utcDay(isoDate) {
+  if (typeof isoDate !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(isoDate)) return null;
+  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function fmtUtcDay(d, withYear) {
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}), timeZone: "UTC" });
+}
+
 // "2026-09-26" -> "26 Sept 2026" (en-GB, UTC). The month abbreviation is
 // engine-dependent ("Sept" vs "Sep"); nothing may depend on the exact string.
 export function fmtDay(isoDate) {
   if (typeof isoDate !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(isoDate)) return fmtOrDash(isoDate);
-  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);
-  if (Number.isNaN(d.getTime())) return isoDate;
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  const d = utcDay(isoDate);
+  return d ? fmtUtcDay(d, true) : isoDate;
+}
+
+// "2026-11-27" -> "27 Nov"; the year is added only when it differs from
+// refDate's year (refDate: an ISO date, e.g. the summary's as_of_date).
+export function fmtShortDay(isoDate, refDate) {
+  const d = utcDay(isoDate);
+  if (!d) return fmtOrDash(isoDate);
+  const ref = utcDay(refDate);
+  return fmtUtcDay(d, ref !== null && ref.getUTCFullYear() !== d.getUTCFullYear());
 }
 
 // ISO timestamp -> "27 Sept 2026, 06:54" (en-GB, UTC; caller appends "UTC").

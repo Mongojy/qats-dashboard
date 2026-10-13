@@ -9,7 +9,8 @@
 // sortByLivePnl) take "stream rows" assembled by the caller from this module
 // and cones.js:
 //   { id, name, livePnlPct, index, openCount, flags: [{key,label}],
-//     status: { kind, token, label, tone }, next: nextRead(...) | null }
+//     status: { kind, token, label, tone }, next: nextRead(...) | null,
+//     universe: "v1" | "v2", pinned: boolean }
 
 // Nominal paper allocation; schema_v2 has no baseline field.
 export const BASELINE_EQUITY = 10_000;
@@ -44,6 +45,12 @@ function equitySeries(stream) {
 export function rowIndex(stream) {
   const n = equitySeries(stream).length;
   return n > 0 ? n - 1 : null;
+}
+
+// Each row's own date (equity_series[r].date) by row index, null when
+// missing. Calendar input for the charts and read dates (calendar.js).
+export function rowDates(stream) {
+  return equitySeries(stream).map((p) => (typeof p?.date === "string" ? p.date : null));
 }
 
 // Mark-to-market value of the paper book, started at BASELINE_EQUITY.
@@ -170,6 +177,45 @@ export function sortByLivePnl(rows) {
     if (bv === null) return -1;
     return bv - av;
   });
+}
+
+// List order: pinned (reference) rows first, then live P&L descending,
+// missing / NaN P&L last, ties by id ascending. The pin is static
+// (strategies.js), so the order does not move when verdicts arrive.
+export function sortForList(rows) {
+  const pnl = (r) => (typeof r.livePnlPct === "number" && !Number.isNaN(r.livePnlPct) ? r.livePnlPct : null);
+  return [...rows].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    const av = pnl(a);
+    const bv = pnl(b);
+    if (av !== bv) {
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return bv - av;
+    }
+    return String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0;
+  });
+}
+
+// Pinned (reference) rows belong to every universe tab.
+export function matchesUniverse(row, universe) {
+  return row.pinned || row.universe === universe;
+}
+
+export function hasUnpinned(rows, universe) {
+  return rows.some((r) => !r.pinned && r.universe === universe);
+}
+
+// v2 once it holds any non-reference stream, else v1.
+export function defaultUniverse(rows) {
+  return hasUnpinned(rows, "v2") ? "v2" : "v1";
+}
+
+// Default selection for route #/: the first non-pinned row, so the detail
+// opens on the top stream rather than the reference; the pinned row only
+// when nothing else is there. rows: already in list order.
+export function firstSelectable(rows) {
+  return rows.find((r) => !r.pinned) ?? rows[0] ?? null;
 }
 
 function plural(n, one, many = `${one}s`) {
