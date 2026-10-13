@@ -48,17 +48,18 @@ describe("week bands", () => {
     expect(spans[spans.length - 1].x2).toBe(14);
   });
 
-  it("gives a week the same tone in the live path and the cone chart", () => {
+  it("tone depends only on the week, not on the x mapping or the render", () => {
     const s = findStream(makeSummary(), "tsmom_v1");
     const live = weekBandSpans(liveSeries(s).map((p, i) => ({ date: p.date, x: i * 3 })), { x0: 0, x1: 1e6 });
+    // Another mapping over a longer, row-extrapolated date range.
     const dates = rowDates(s);
-    const cone = weekBandSpans(
+    const other = weekBandSpans(
       Array.from({ length: 151 }, (_, r) => ({ date: dateAtRow(dates, r).iso, x: 50 + r })),
       { x0: 0, x1: 1e6 },
     );
-    const coneTone = new Map(cone.map((sp) => [sp.start, sp.alt]));
+    const otherTone = new Map(other.map((sp) => [sp.start, sp.alt]));
     expect(live.length).toBeGreaterThan(10);
-    for (const sp of live) expect(coneTone.get(sp.start), sp.start).toBe(sp.alt);
+    for (const sp of live) expect(otherTone.get(sp.start), sp.start).toBe(sp.alt);
     // Re-render: same input, same tones.
     expect(weekBandSpans(liveSeries(s).map((p, i) => ({ date: p.date, x: i })), { x0: 0, x1: 1e6 }).map((x) => x.alt)).toEqual(
       live.map((x) => x.alt),
@@ -74,33 +75,26 @@ describe("week bands", () => {
     expect(dateAtRow([], 3)).toBeNull();
   });
 
-  it("cone chart: bands first, spanning the whole x window past the last row", () => {
-    const s = findStream(makeSummary(), "f_lo_1_0"); // last row 28, window to 90
-    const cone = makeCone("f_lo_1_0");
-    const realized = realizedSeries(s);
-    const gridPoints = gridPointsInWindow(cone, 28);
-    const svg = coneChartSvg({ realized, gridPoints, reads: [], rowDates: rowDates(s) }, { width: 360, height: 240 });
-    const rects = [...svg.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" class="week-band"/g)].map((m) =>
-      m.slice(1).map(Number),
-    );
-    expect(rects.length).toBeGreaterThan(5);
-    expect(svg.indexOf("week-band")).toBeLessThan(svg.indexOf("cone-chart__axis"));
-    const left = 48;
-    const right = 360 - 14;
-    for (const [x, y, w, h] of rects) {
-      expect(x).toBeGreaterThanOrEqual(left);
-      expect(x + w).toBeLessThanOrEqual(right + 0.01);
-      expect([y, h]).toEqual([18, 198]);
-    }
-    // Rows 29..90 are extrapolated: the band sequence runs to the plot's
-    // right edge, ending in the (partial) week of row 90.
+  it("spans extrapolated rows past the last row up to the range end", () => {
+    const s = findStream(makeSummary(), "f_lo_1_0"); // last row 28
     const spans = weekBandSpans(
-      Array.from({ length: 91 }, (_, r) => ({ date: dateAtRow(rowDates(s), r).iso, x: left + (r / 90) * (right - left) })),
-      { x0: left, x1: right },
+      Array.from({ length: 91 }, (_, r) => ({ date: dateAtRow(rowDates(s), r).iso, x: r })),
+      { x0: 0, x1: 90 },
     );
-    expect(spans[spans.length - 1].x2).toBeCloseTo(right, 6);
+    expect(spans[spans.length - 1].x2).toBe(90);
     expect(spans[spans.length - 1].start).toBe("2026-11-23"); // week of row 90 = 27 Nov
+  });
+
+  it("cone chart: no week bands; the date line keeps its +12 viewBox", () => {
+    const s = findStream(makeSummary(), "f_lo_1_0");
+    const cone = makeCone("f_lo_1_0");
+    const gridPoints = gridPointsInWindow(cone, 28);
+    const horizonDates = [{ horizon: 90, label: "≈27 Nov", role: "next" }];
+    const svg = coneChartSvg({ realized: realizedSeries(s), gridPoints, reads: [], horizonDates }, { width: 360, height: 240 });
+    expect(svg).not.toContain("week-band");
+    expect(svg).not.toContain("<rect");
     expect(svg).toContain(`viewBox="0 0 360 252"`);
+    expect(svg).toContain(">≈27 Nov</text>");
   });
 
   it("live path: bands sit under every other layer", () => {
@@ -183,7 +177,7 @@ describe("read dates", () => {
     const realized = realizedSeries(s);
     const gridPoints = gridPointsInWindow(cone, 105);
     const svg = coneChartSvg(
-      { realized, gridPoints, reads: chartReads(cone, 120), rowDates: rowDates(s), horizonDates: labels },
+      { realized, gridPoints, reads: chartReads(cone, 120), horizonDates: labels },
       { width: 640, height: 240 },
     );
     expect(svg.match(/cone-chart__date-label/g)).toHaveLength(2);

@@ -3,7 +3,7 @@
 // either a number formatted here or a string passed through escapeHtml.
 
 import { escapeHtml, fmtDay } from "./format.js";
-import { dateAtRow, weekBandSpans } from "./calendar.js";
+import { weekBandSpans } from "./calendar.js";
 
 function bucket(value) {
   return value >= 0 ? "pos" : "neg";
@@ -165,6 +165,9 @@ export function livePathSvg(points) {
     `;
   }
   const z = yAt(0);
+  // The max / min overlay labels are left empty when that extreme is the
+  // last point: the last-value label already shows it (the empty max span
+  // keeps the last label on the right).
   // x is index-based (unchanged geometry); bands map dates through the same
   // per-point x, so a date gap would still land on the right x.
   const bandPoints = series.length > 1 ? series.map((p, i) => ({ date: p.date, x: (i / (series.length - 1)) * w })) : [];
@@ -178,10 +181,10 @@ export function livePathSvg(points) {
         ${plot}
       </svg>
       <div class="live-path__top">
-        <span class="tabular">${fmtPctLabel(max)}</span>
+        <span class="tabular">${last === max ? "" : fmtPctLabel(max)}</span>
         <span class="tabular live-path__last live-path__last--${bucket(last)}">${fmtPctLabel(last, 2)}</span>
       </div>
-      <div class="live-path__bottom"><span class="tabular">${fmtPctLabel(min)}</span></div>
+      <div class="live-path__bottom"><span class="tabular">${last === min ? "" : fmtPctLabel(min)}</span></div>
     </div>
     <div class="live-path__dates">
       <span>${escapeHtml(fmtDay(series[0].date))}</span>
@@ -200,7 +203,6 @@ export function livePathSvg(points) {
 //   realized:   [{ row, cumReturn }]                  from realizedSeries(stream)
 //   gridPoints: [{ horizon, percentiles|null }]        from gridPointsInWindow(cone, lastRow)
 //   reads:      [{ horizon, y, label }]                from chartReads(cone, windowEnd)
-//   rowDates:   [date|null] by row                     from data.js rowDates(stream)
 //   horizonDates: [{ horizon, label, role }]           from horizonDateLabels(...)
 // ---------------------------------------------------------------------------
 
@@ -210,14 +212,20 @@ const CONE_PAD = { top: 18, right: 14, bottom: 24, left: 48 };
 const CONE_DATE_LINE = 12;
 const TICK_FONT_PX = 11;
 const LABEL_GAP = 4;
+// y labels end Y_LABEL_GAP left of the plot; the left pad grows past
+// CONE_PAD.left only when the widest label (+ Y_LABEL_MARGIN) would not fit.
+const Y_LABEL_GAP = 8;
+const Y_LABEL_MARGIN = 2;
 
 // Advance widths (em) of IBM Plex Sans Regular, the tick-label font,
 // measured in the browser (canvas measureText, 2026-10-13) for the glyphs of
-// "≈27 Nov 2027"-style labels; anything unlisted uses the widest (M).
+// "≈27 Nov 2027"-style date labels and "+298.2%"-style y labels; anything
+// unlisted uses the widest (M).
 const PLEX_SANS_EM = {
   ...Object.fromEntries([..."0123456789"].map((d) => [d, 0.6])),
   " ": 0.236,
   "≈": 0.604,
+  "+": 0.6, "-": 0.399, ".": 0.272, "%": 0.927,
   A: 0.641, D: 0.671, F: 0.559, J: 0.51, M: 0.812, N: 0.707, O: 0.708, S: 0.581,
   a: 0.534, b: 0.58, c: 0.503, e: 0.549, g: 0.528, l: 0.272, n: 0.568, o: 0.56,
   p: 0.58, r: 0.367, t: 0.351, u: 0.568, v: 0.492, y: 0.499,
@@ -290,7 +298,7 @@ function coneLegend() {
   `;
 }
 
-export function coneChartSvg({ realized, gridPoints, reads, rowDates, horizonDates }, { width = 640, height = 240 } = {}) {
+export function coneChartSvg({ realized, gridPoints, reads, horizonDates }, { width = 640, height = 240 } = {}) {
   const realizedPoints = Array.isArray(realized) ? realized : [];
   const validGridPoints = (Array.isArray(gridPoints) ? gridPoints : []).filter((gp) => gp && gp.percentiles);
   const readMarkers = Array.isArray(reads) ? reads : [];
@@ -303,44 +311,34 @@ export function coneChartSvg({ realized, gridPoints, reads, rowDates, horizonDat
   const lastRow = realizedPoints.length ? realizedPoints[realizedPoints.length - 1].row : 0;
   const xDomainEnd = Math.max(windowEnd, lastRow, 1);
 
-  const innerW = width - CONE_PAD.left - CONE_PAD.right;
-  const innerH = height - CONE_PAD.top - CONE_PAD.bottom;
-  const xAt = (row) => CONE_PAD.left + (row / xDomainEnd) * innerW;
-
   const yValues = [0, ...realizedPoints.map((p) => p.cumReturn), ...readMarkers.map((r) => r.y)];
   for (const gp of validGridPoints) yValues.push(gp.percentiles.p1, gp.percentiles.p95);
   const yMin = Math.min(...yValues);
   const yMax = Math.max(...yValues);
+  const yTickValues = [...new Set([yMin, 0, yMax])];
+  const widestY = Math.max(...yTickValues.map((v) => tickLabelWidth(fmtFracPctLabel(v))));
+  const left = Math.max(CONE_PAD.left, Math.ceil(widestY + Y_LABEL_GAP + Y_LABEL_MARGIN));
+
+  const innerW = width - left - CONE_PAD.right;
+  const innerH = height - CONE_PAD.top - CONE_PAD.bottom;
+  const xAt = (row) => left + (row / xDomainEnd) * innerW;
   const ySpan = yMax - yMin || 1;
   const yAt = (v) => CONE_PAD.top + innerH - ((v - yMin) / ySpan) * innerH;
   const yZero = yAt(0);
   const bottom = CONE_PAD.top + innerH;
 
   const axes = `
-    <line x1="${CONE_PAD.left}" y1="${fixed(bottom)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(bottom)}" class="cone-chart__axis" />
-    <line x1="${CONE_PAD.left}" y1="${fixed(yZero)}" x2="${fixed(CONE_PAD.left + innerW)}" y2="${fixed(yZero)}" class="cone-chart__zero-line" />
+    <line x1="${left}" y1="${fixed(bottom)}" x2="${fixed(left + innerW)}" y2="${fixed(bottom)}" class="cone-chart__axis" />
+    <line x1="${left}" y1="${fixed(yZero)}" x2="${fixed(left + innerW)}" y2="${fixed(yZero)}" class="cone-chart__zero-line" />
   `;
 
-  const yTicks = [...new Set([yMin, 0, yMax])]
+  const yTicks = yTickValues
     .map(
       (v) => `
-      <text x="${fixed(CONE_PAD.left - 8)}" y="${fixed(yAt(v))}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
+      <text x="${fixed(left - Y_LABEL_GAP)}" y="${fixed(yAt(v))}" class="cone-chart__tick-label" text-anchor="end" dominant-baseline="middle">${fmtFracPctLabel(v)}</text>
     `,
     )
     .join("");
-
-  // Week bands over the whole x window: realized rows carry their own date,
-  // rows past the last one are extrapolated a day per row.
-  const bandPoints = [];
-  for (let row = 0; row <= xDomainEnd; row++) {
-    const at = dateAtRow(rowDates, row);
-    if (at) bandPoints.push({ date: at.iso, x: xAt(row) });
-  }
-  const bands = weekBandRects(
-    weekBandSpans(bandPoints, { x0: CONE_PAD.left, x1: CONE_PAD.left + innerW }),
-    CONE_PAD.top,
-    innerH,
-  );
 
   const xTicks = [0, ...validGridPoints.map((gp) => gp.horizon)]
     .map(
@@ -403,7 +401,6 @@ export function coneChartSvg({ realized, gridPoints, reads, rowDates, horizonDat
 
   return `
     <svg viewBox="0 0 ${width} ${height + CONE_DATE_LINE}" class="cone-chart" role="img" aria-label="Expected range versus live path">
-      ${bands}
       ${axes}
       ${yTicks}
       ${xTicks}

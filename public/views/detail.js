@@ -4,7 +4,6 @@
 import {
   streamId,
   anchorDate,
-  rowDates,
   rowIndex,
   bookValueUsd,
   livePnlPct,
@@ -136,7 +135,6 @@ function coneBody(stream, cone, payload, coneWidth, next, asOfDate) {
         realized,
         gridPoints,
         reads: chartReads(cone, windowEnd),
-        rowDates: rowDates(stream),
         horizonDates: horizonDateLabels(stream, cone, next, asOfDate),
       },
       { width: coneWidth, height: 240 },
