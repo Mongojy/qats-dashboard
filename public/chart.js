@@ -37,9 +37,42 @@ function weekBandRects(spans, y, height) {
     .join("");
 }
 
+// Splits a polyline at its interpolated zero crossings into runs of one
+// sign — values >= 0 "pos", < 0 "neg" — shared by every chart that colours
+// a line by sign. coords: [{ x, y, v }]; yZero: the y of value 0. A point
+// exactly at 0 never yields an empty piece. Returns [{ tone, points: [{ x, y }] }].
+export function signRuns(coords, yZero) {
+  const runs = [];
+  const add = (a, b, tone) => {
+    if (a.x === b.x && a.y === b.y) return;
+    const run = runs[runs.length - 1];
+    const end = run?.points[run.points.length - 1];
+    if (run && run.tone === tone && end.x === a.x && end.y === a.y) run.points.push({ x: b.x, y: b.y });
+    else runs.push({ tone, points: [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] });
+  };
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i];
+    const b = coords[i + 1];
+    if (bucket(a.v) === bucket(b.v)) {
+      add(a, b, bucket(a.v));
+    } else {
+      const t = a.v / (a.v - b.v);
+      const cross = { x: a.x + (b.x - a.x) * t, y: yZero };
+      add(a, cross, bucket(a.v));
+      add(cross, b, bucket(b.v));
+    }
+  }
+  return runs;
+}
+
+function runPath(run) {
+  return run.points.map((p, i) => `${i === 0 ? "M" : "L"}${fixed(p.x)} ${fixed(p.y)}`).join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // Sparkline (strategy card). Input: liveSeries(stream) -> [{ date, pct }].
-// Zero baseline + one path coloured by the sign of the last point.
+// Zero baseline + the line split at zero crossings (signRuns), one path per
+// tone like the live path; line only — at this size a fill is noise.
 // ---------------------------------------------------------------------------
 
 export function sparklineSvg(points) {
@@ -54,13 +87,21 @@ export function sparklineSvg(points) {
   const span = max - min || 1;
   const xAt = (i) => pad + (i / Math.max(values.length - 1, 1)) * (w - pad * 2);
   const yAt = (v) => pad + (1 - (v - min) / span) * (h - pad * 2);
-  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${fixed(xAt(i))} ${fixed(yAt(v))}`).join(" ");
-  const tone = bucket(values[values.length - 1]);
+  let lines;
+  if (values.length === 1) {
+    lines = `<path d="M${fixed(xAt(0))} ${fixed(yAt(values[0]))}" class="spark__line spark__line--${bucket(values[0])}" vector-effect="non-scaling-stroke" />`;
+  } else {
+    const runs = signRuns(values.map((v, i) => ({ x: xAt(i), y: yAt(v), v })), yAt(0));
+    lines = ["pos", "neg"]
+      .map((tone) => runs.filter((r) => r.tone === tone).map(runPath).join(" "))
+      .map((d, i) => (d ? `<path d="${d}" class="spark__line spark__line--${i === 0 ? "pos" : "neg"}" vector-effect="non-scaling-stroke" />` : ""))
+      .join("");
+  }
 
   return `
     <svg viewBox="0 0 ${w} ${h}" class="spark" preserveAspectRatio="none" aria-hidden="true">
       <line x1="0" x2="${w}" y1="${fixed(yAt(0))}" y2="${fixed(yAt(0))}" class="spark__zero" />
-      <path d="${d}" class="spark__line spark__line--${tone}" vector-effect="non-scaling-stroke" />
+      ${lines}
     </svg>
   `;
 }
@@ -89,24 +130,11 @@ function splitBySign(values, w, h) {
   const z = yAt(0);
   const line = { pos: [], neg: [] };
   const area = { pos: [], neg: [] };
-
-  const push = (a, b, tone) => {
-    const seg = `M${fixed(a.x)} ${fixed(a.y)} L${fixed(b.x)} ${fixed(b.y)}`;
-    line[tone].push(seg);
-    area[tone].push(`${seg} L${fixed(b.x)} ${fixed(z)} L${fixed(a.x)} ${fixed(z)} Z`);
-  };
-
-  for (let i = 0; i < xy.length - 1; i++) {
-    const a = xy[i];
-    const b = xy[i + 1];
-    if (bucket(a.v) === bucket(b.v)) {
-      push(a, b, bucket(a.v));
-    } else {
-      const t = a.v / (a.v - b.v);
-      const cross = { x: a.x + (b.x - a.x) * t, y: z, v: 0 };
-      push(a, cross, bucket(a.v));
-      push(cross, b, bucket(b.v));
-    }
+  for (const run of signRuns(xy, z)) {
+    const first = run.points[0];
+    const last = run.points[run.points.length - 1];
+    line[run.tone].push(runPath(run));
+    area[run.tone].push(`${runPath(run)} L${fixed(last.x)} ${fixed(z)} L${fixed(first.x)} ${fixed(z)} Z`);
   }
   return { z, line, area };
 }
@@ -249,23 +277,6 @@ export function placeDateLabels(items, xAt, width = Infinity) {
   return placed;
 }
 
-function realizedSegments(coords, yZero) {
-  const segments = [];
-  for (let i = 0; i < coords.length - 1; i++) {
-    const a = coords[i];
-    const b = coords[i + 1];
-    if (bucket(a.v) === bucket(b.v)) {
-      segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, tone: bucket(a.v) });
-    } else {
-      const t = a.v / (a.v - b.v);
-      const crossX = a.x + (b.x - a.x) * t;
-      segments.push({ x1: a.x, y1: a.y, x2: crossX, y2: yZero, tone: bucket(a.v) });
-      segments.push({ x1: crossX, y1: yZero, x2: b.x, y2: b.y, tone: bucket(b.v) });
-    }
-  }
-  return segments;
-}
-
 function coneLegend() {
   const item = (cls, label) => `<span class="legend__item"><span class="legend__swatch ${cls}"></span>${label}</span>`;
   return `
@@ -367,7 +378,10 @@ export function coneChartSvg({ realized, gridPoints, reads, rowDates, horizonDat
     realizedLine = `<circle cx="${fixed(xAt(p.row))}" cy="${fixed(yAt(p.cumReturn))}" r="3" class="cone-chart__realized cone-chart__realized--${bucket(p.cumReturn)}" />`;
   } else if (realizedPoints.length > 1) {
     const coords = realizedPoints.map((p) => ({ x: xAt(p.row), y: yAt(p.cumReturn), v: p.cumReturn }));
-    realizedLine = realizedSegments(coords, yZero)
+    realizedLine = signRuns(coords, yZero)
+      .flatMap((run) =>
+        run.points.slice(1).map((b, i) => ({ x1: run.points[i].x, y1: run.points[i].y, x2: b.x, y2: b.y, tone: run.tone })),
+      )
       .map(
         (s) =>
           `<line x1="${fixed(s.x1)}" y1="${fixed(s.y1)}" x2="${fixed(s.x2)}" y2="${fixed(s.y2)}" class="cone-chart__realized cone-chart__realized--${s.tone}" />`,
